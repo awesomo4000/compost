@@ -62,7 +62,7 @@ To install optimized binaries at predictable paths:
 
 ```sh
 mise exec -- zig build -Doptimize=fast
-./zig-out/bin/tmuxpp-shell
+./zig-out/bin/compo
 ```
 
 Use `-Doptimize=small` for the smaller build. `zig build` also installs
@@ -71,6 +71,8 @@ Use `-Doptimize=small` for the smaller build. `zig build` also installs
 The legacy left dock is up to 24 columns wide and shrinks on narrow displays. This host
 is tested on macOS. An optional floating shell is available with `TMUXPP_FLOAT=1`; Alt-left-drag
 moves it, dragging a border resizes that edge, and Ctrl-] then `f` hides or shows it.
+The default `aurora` style uses a pink–violet–teal gradient and rounded floating
+corners. Set `COMPO_BORDER_STYLE=plain` for the original cyan/gray borders.
 Borders brighten on hover; the dock and main terminal share one draggable divider.
 Detach/reattach and complete Kitty graphics rendering are not implemented. See
 [shell host notes](docs/shell-host.md) for the exact supported behavior.

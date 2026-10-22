@@ -2,6 +2,27 @@
 const std = @import("std");
 const core = @import("compositor");
 
+pub const Style = enum { plain, aurora };
+pub var style: Style = .aurora;
+const RGB = struct { r: u8, g: u8, b: u8 };
+fn mix(a: RGB, b: RGB, amount: i32, span: i32) RGB {
+    const total = @max(1, span);
+    const n = std.math.clamp(amount, 0, total);
+    var result: RGB = undefined;
+    inline for (.{ "r", "g", "b" }) |channel| {
+        @field(result, channel) = @intCast(@divTrunc(@as(i64, @field(a, channel)) * (total - n) + @as(i64, @field(b, channel)) * n, total));
+    }
+    return result;
+}
+fn borderColor(r: core.Rect, x: i32, y: i32, active: bool, hover: bool) RGB {
+    const upper = mix(.{ .r = 244, .g = 55, .b = 151 }, .{ .r = 111, .g = 85, .b = 240 }, x - r.x, r.w - 1);
+    const lower = mix(.{ .r = 174, .g = 65, .b = 209 }, .{ .r = 49, .g = 179, .b = 144 }, x - r.x, r.w - 1);
+    var color = mix(upper, lower, y - r.y, r.h - 1);
+    if (!active) color = mix(.{ .r = 30, .g = 30, .b = 34 }, color, 60, 100);
+    if (hover) color = mix(color, .{ .r = 255, .g = 255, .b = 255 }, 30, 100);
+    return color;
+}
+
 pub fn hasBorder(bounds: core.Rect) bool {
     return bounds.w >= 3 and bounds.h >= 3;
 }
@@ -125,6 +146,7 @@ pub fn draw(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, hover: ?Ed
     const r = window.bounds;
     if (!window.visible or !hasBorder(r)) return;
     var last_color: ?u8 = null;
+    var last_rgb: ?RGB = null;
     const shared_left = sharesLeft(scene, id);
     const shared_top = sharesTop(scene, id);
     var y = r.y;
@@ -154,12 +176,19 @@ pub fn draw(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, hover: ?Ed
                 false else false;
             const active = scene.focus == id or (divider and shared_active) or tile_shared_active;
             const color: u8 = if (active) (if (highlighted) 96 else 36) else (if (highlighted) 37 else 90);
-            if (last_color != color) {
+            if (style == .aurora) {
+                const color_bounds = if ((divider and shared_active) or tile_shared_active) scene.get(scene.focus.?).?.bounds else r;
+                const rgb = borderColor(color_bounds, x, y, active, highlighted);
+                if (last_rgb == null or !std.meta.eql(last_rgb.?, rgb)) {
+                    try w.print("\x1b[0;38;2;{d};{d};{d}m", .{ rgb.r, rgb.g, rgb.b });
+                    last_rgb = rgb;
+                }
+            } else if (last_color != color) {
                 try w.print("\x1b[0;{d}m", .{color});
                 last_color = color;
             }
             if (!adjacent) try w.print("\x1b[{d};{d}H", .{ y + 1, x + 1 });
-            const glyph: []const u8 = if (window.options.kind != .floating) joinedGlyph(scene, x, y) else if (highlighted and top and left and hover == .top_left) "↖" else if (highlighted and top and right and hover == .top_right) "↗" else if (highlighted and bottom and left and hover == .bottom_left) "↙" else if (highlighted and bottom and right and hover == .bottom_right) "↘" else if (divider and top) "┬" else if (divider and bottom) "┴" else if (top and left) "┌" else if (top and right) "┐" else if (bottom and left) "└" else if (bottom and right) "┘" else if (top or bottom) "─" else "│";
+            const glyph: []const u8 = if (window.options.kind != .floating) joinedGlyph(scene, x, y) else if (highlighted and top and left and hover == .top_left) "↖" else if (highlighted and top and right and hover == .top_right) "↗" else if (highlighted and bottom and left and hover == .bottom_left) "↙" else if (highlighted and bottom and right and hover == .bottom_right) "↘" else if (divider and top) "┬" else if (divider and bottom) "┴" else if (top and left) (if (style == .aurora) "╭" else "┌") else if (top and right) (if (style == .aurora) "╮" else "┐") else if (bottom and left) (if (style == .aurora) "╰" else "└") else if (bottom and right) (if (style == .aurora) "╯" else "┘") else if (top or bottom) "─" else "│";
             try w.writeAll(glyph);
             adjacent = true;
         }

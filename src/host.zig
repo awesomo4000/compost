@@ -193,7 +193,7 @@ fn loop(ws: *c.winsize) c_int {
 pub fn run() c_int {
     var ws: c.winsize = std.mem.zeroes(c.winsize);
     if (c.isatty(0) == 0 or c.isatty(1) == 0 or c.tcgetattr(0, &original) < 0) {
-        _ = writeAll(2, "tmuxpp-shell needs a terminal on stdin and stdout\n");
+        _ = writeAll(2, "compo needs a terminal on stdin and stdout\n");
         return 1;
     }
     desktop = c.getenv("TMUXPP_DESKTOP") != null or

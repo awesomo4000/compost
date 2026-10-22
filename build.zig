@@ -53,7 +53,7 @@ pub fn build(b: *std.Build) void {
     });
     b.step("demo-vt", "Replay terminal output through libghostty-vt").dependOn(&b.addRunArtifact(terminal_demo).step);
     const shell = b.addExecutable(.{
-        .name = "tmuxpp-shell",
+        .name = "compo",
         .root_module = b.createModule(.{
             .root_source_file = b.path("src/shell.zig"),
             .target = target,

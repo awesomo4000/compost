@@ -2,6 +2,12 @@
 
 ## 10/22/2026
 
+- Added the default aurora border style with a pink/violet/teal RGB gradient, rounded floating corners, muted inactive windows, and brighter hover handles. Shared dividers follow adjacent focus. Retained the original style through `COMPO_BORDER_STYLE=plain`.
+
+- Renamed the compositor executable to `compo`; updated build output, documentation, and PTY tests.
+
+- Fixed mouse forwarding for applications that negotiate SGR pixel mode 1016, including Vaxis/tmm. Translate outer cell reports into pane-local pixel coordinates while preserving hover, wheel, release, and drag capture. Added a Vaxis-style negotiation regression.
+
 - Replaced opaque drop previews with a 25% tint over retained cell colors. Preserved text, Unicode, styles, and original colors on movement/cancellation. Kitty images remain visible and untinted. Removed the extra preview window and added renderer restoration and image-retention tests.
 
 - Added broad directional drop zones within tiles, with workspace-edge priority and a central floating-placement area. Tiles now share borders with connected junctions; dragging a divider resizes both sides, preserves keyboard focus, and supports Escape cancellation.

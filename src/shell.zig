@@ -69,6 +69,9 @@ const allocator = std.heap.smp_allocator;
 
 pub fn main(init: std.process.Init) !void {
     io = init.io;
+    if (std.c.getenv("COMPO_BORDER_STYLE")) |value| {
+        if (std.mem.eql(u8, std.mem.span(value), "plain")) decoration.style = .plain;
+    }
     defer if (border_output) |*output| output.deinit();
     defer for (&slots) |*slot| {
         if (slot.surface) |s| s.destroy();
@@ -356,7 +359,16 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 if (scene.capture == null and !bounds.contains(mouse.x, mouse.y)) return;
                 const x = std.math.clamp(@as(i32, mouse.x) - bounds.x, 0, bounds.w - 1) + 1;
                 const y = std.math.clamp(@as(i32, mouse.y) - bounds.y, 0, bounds.h - 1) + 1;
-                if (s.terminal.modes.get(.mouse_format_sgr)) {
+                if (s.terminal.modes.get(.mouse_format_sgr_pixels)) {
+                    // The outer host requests cell reports. Project their centers
+                    // into the child pixel grid, after subtracting pane borders.
+                    const cw: i32 = @max(1, s.size.cell_width);
+                    const ch: i32 = @max(1, s.size.cell_height);
+                    const px = (x - 1) * cw + @divTrunc(cw, 2) + 1;
+                    const py = (y - 1) * ch + @divTrunc(ch, 2) + 1;
+                    var buf: [80]u8 = undefined;
+                    try write(slot, try std.mem.print(&buf, "\x1b[<{d};{d};{d}{s}", .{ mouse.button, px, py, if (mouse.release) "m" else "M" }));
+                } else if (s.terminal.modes.get(.mouse_format_sgr)) {
                     var buf: [80]u8 = undefined;
                     try write(slot, try std.mem.print(&buf, "\x1b[<{d};{d};{d}{s}", .{ mouse.button, x, y, if (mouse.release) "m" else "M" }));
                 } else if (x <= 223 and y <= 223 and mouse.button <= 223) {

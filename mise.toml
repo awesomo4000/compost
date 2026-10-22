@@ -17,7 +17,7 @@ run = "zig build shell"
 
 [tasks.test-host]
 description = "Build and test the shell host in disposable PTYs"
-run = ["zig build -Doptimize=fast", "python3 tests/shell_host.py", "python3 tests/tui_host.py", "python3 tests/floating_host.py", "python3 tests/borders_host.py", "python3 tests/desktop_host.py", "python3 tests/diagnostics_host.py"]
+run = ["zig build -Doptimize=fast", "python3 tests/shell_host.py", "python3 tests/tui_host.py", "python3 tests/floating_host.py", "python3 tests/borders_host.py", "python3 tests/desktop_host.py", "python3 tests/diagnostics_host.py", "python3 tests/pixel_mouse_host.py"]
 
 [tasks.deps-check]
 description = "Check the rolling libghostty-vt asset and watched embedder hooks"

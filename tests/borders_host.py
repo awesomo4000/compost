@@ -84,3 +84,25 @@ for x, y, dx, dy, symbol, origin in (
         finally:
             host.close()
 print('Corners: expanded border hit areas, hover arrows, and two-axis resizing passed.')
+
+with tempfile.TemporaryDirectory(prefix='compo-aurora-', dir='/tmp') as directory:
+    command = shlex.join([sys.executable, str(Path(__file__).with_name('float_child.py')), 'AURORA', directory])
+    host = Host(command, desktop=True, border_style='aurora')
+    try:
+        host.until(lambda: b'Ctrl-]' in host.text())
+        os.write(host.master, b'\x1d\r')
+        host.until(lambda: b'AURORA01' in host.text())
+        for corner in ('╭', '╮', '╰', '╯'):
+            assert corner.encode() in host.data
+        for rgb in (b'244;55;151', b'111;85;240', b'174;65;209', b'49;179;144'):
+            assert b'\x1b[0;38;2;' + rgb + b'm' in host.data, rgb
+        host.data.clear()
+        os.write(host.master, b'\x1b[<35;14;5M')
+        host.until(lambda: '↖'.encode() in host.data)
+        assert b'\x1b[0;38;2;247;115;182m' in host.data
+        assert b'\x1b[2J' not in host.data
+        os.write(host.master, b'\x1dq')
+        host.finish(0)
+    finally:
+        host.close()
+print('Aurora: four-corner RGB gradient, rounded floats, and brighter hover handles passed.')

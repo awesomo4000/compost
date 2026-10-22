@@ -29,7 +29,7 @@ provide fixture commands. `TMUXPP_DESKTOP=1` forces empty-desktop startup even
 when those variables are set. In desktop mode each new shell uses TMUXPP_COMMAND
 if provided. Desktop quit returns zero.
 
-`zig build` installs `zig-out/bin/tmuxpp-shell` and both demos.
+`zig build` installs `zig-out/bin/compo` and both demos.
 
 The window model remains terminal-independent. `src/shell.zig` connects it to
 the terminal adapter and renderer. `src/host.zig` handles POSIX PTYs, tty modes, polling, signals, and child cleanup.
@@ -52,8 +52,11 @@ retain it across another draw. Visibility regions are cached until the scene
 revision changes. Buffers grow when needed and are released with the renderer. Unchanged surfaces
 are skipped; full clearing is reserved for layout changes. The cursor is restored
 to the focused surface after painting. The host owns outer input modes and keeps
-focus reporting enabled across frames to avoid focus-event feedback loops. Focused borders are cyan; inactive borders are gray. Draggable edges brighten
-on hover. Window labels remain pending.
+focus reporting enabled across frames to avoid focus-event feedback loops. The default `aurora` border style interpolates pink, violet, and teal across
+each window, with rounded floating corners. Inactive gradients are muted;
+hovering a draggable edge brightens it. Shared dividers use the focused
+neighbor's gradient when adjacent to focus. `COMPO_BORDER_STYLE=plain` restores
+the original cyan/gray colors and square corners. Window labels remain pending.
 
 `src/input.zig` incrementally frames outer CSI sequences, SGR mouse reports,
 focus reports, and bracketed paste. A 50 ms timeout forwards a standalone Escape
@@ -61,7 +64,9 @@ even if another shell continuously emits output. The compositor always requests
 SGR mouse motion and bracketed-paste reports so borders can react to hover. Clicks focus windows; captured drags and
 releases remain with their starting window. Mouse positions become local to
 that window, clamped at its edges during capture. Mouse events reach only children
-that requested them, with SGR or legacy encoding according to the child's mode.
+that requested them, with SGR cell, SGR pixel, or legacy encoding according to the child's mode.
+Mode 1016 reports use pane-local cell centers because outer input currently
+uses cell coordinates; subcell mouse precision is not yet retained.
 
 Ordinary key bytes go to the focused child. Cursor-key mode follows that child.
 Focus reports go only to children requesting them. Paste contents bypass the
@@ -97,7 +102,7 @@ The default host has two shells. Set `TMUXPP_FLOAT=1` to start a third shell in
 an opaque floating rectangle, initially centered in the main area. For example:
 
 ```sh
-TMUXPP_FLOAT=1 ./zig-out/bin/tmuxpp-shell
+TMUXPP_FLOAT=1 ./zig-out/bin/compo
 ```
 
 Click the float to focus it; Ctrl-] then Tab cycles visible shells. Ctrl-] then
@@ -175,7 +180,7 @@ interception of border gestures, and the shared sidebar/main resize divider.
 Library warnings do not write onto the live composed display. When stderr is a
 terminal, the host buffers up to 16 KiB and prints diagnostics after restoring
 the terminal on exit. Extra diagnostics are dropped with a notice. Redirect
-stderr for immediate logging: `./zig-out/bin/tmuxpp-shell 2>/tmp/tmuxpp.log`.
+stderr for immediate logging: `./zig-out/bin/compo 2>/tmp/tmuxpp.log`.
 This isolates diagnostics; it does not add support for unimplemented protocols.
 
 Drop previews blend a 25% gray-blue tint into retained cell foreground and

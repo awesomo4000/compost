@@ -13,16 +13,16 @@ import subprocess
 import termios
 import time
 
-BINARY = Path(__file__).resolve().parents[1] / "zig-out/bin/tmuxpp-shell"
+BINARY = Path(__file__).resolve().parents[1] / "zig-out/bin/compo"
 
 
 class Host:
-    def __init__(self, command, sidebar=None, floating=None, desktop=False):
+    def __init__(self, command, sidebar=None, floating=None, desktop=False, border_style="plain"):
         self.master, self.slave = pty.openpty()
         self.resize(24, 80)
         self.original = termios.tcgetattr(self.slave)
         self.data = bytearray()
-        env = dict(os.environ, SHELL="/bin/sh", TMUXPP_COMMAND=command)
+        env = dict(os.environ, SHELL="/bin/sh", TMUXPP_COMMAND=command, COMPO_BORDER_STYLE=border_style)
         env.pop("TMUXPP_DESKTOP", None)
         if desktop:
             env["TMUXPP_DESKTOP"] = "1"
