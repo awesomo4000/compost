@@ -1,0 +1,13 @@
+.{
+    .name = .tmux_compositor,
+    .fingerprint = 0x1eebfe8fda6b261a,
+    .version = "0.1.0",
+    .dependencies = .{
+        .ghostty_vt = .{
+            .url = "vendor/libghostty-vt-source.tar.gz",
+            .hash = "ghostty-1.3.2-dev-5UdBC8cpPQE1YlXkfraXwju-YxbT6xVCKpBfhiXb3d4i",
+        },
+    },
+    .minimum_zig_version = "0.17.0",
+    .paths = .{ "build.zig", "build.zig.zon", "src", "examples", "vendor/libghostty-vt-source.tar.gz" },
+}

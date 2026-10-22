@@ -1,0 +1,24 @@
+[tools]
+zig = "0.17.0"
+
+[tasks.test]
+run = "zig build test"
+
+[tasks.demo]
+run = "zig build demo"
+
+[tasks.demo-vt]
+description = "Replay text and a Kitty image through the terminal adapter"
+run = "zig build demo-vt"
+
+[tasks.shell]
+description = "Run docked and main shells inside the compositor"
+run = "zig build shell"
+
+[tasks.test-host]
+description = "Build and test the shell host in disposable PTYs"
+run = ["zig build -Doptimize=fast", "python3 tests/shell_host.py", "python3 tests/tui_host.py"]
+
+[tasks.deps-check]
+description = "Check the rolling libghostty-vt asset and watched embedder hooks"
+run = "python3 tools/deps-check.py"

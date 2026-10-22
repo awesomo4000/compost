@@ -1,0 +1,12 @@
+.zig-cache/
+zig-out/
+zig-pkg/
+
+# Local upstream/reference checkouts
+/vendor/tmux/
+/x/
+
+# Python and macOS generated files
+__pycache__/
+*.py[cod]
+.DS_Store

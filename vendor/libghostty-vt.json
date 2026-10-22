@@ -1,0 +1,10 @@
+{
+  "repository": "ghostty-org/ghostty",
+  "release": "tip",
+  "asset": "libghostty-vt-source.tar.gz",
+  "commit": "f54340ad77814fe319d136e5e915d6a48de8dd23",
+  "archive_root": "libghostty-vt-1.3.2-main+f54340a",
+  "updated_at": "2026-10-21T21:12:55Z",
+  "sha256": "93b199da3c4fc76b5c3255cea9a8a895d528ca34f4241463af024e050da9e937",
+  "minimum_zig_version": "0.17.0"
+}
