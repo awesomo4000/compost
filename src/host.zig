@@ -14,8 +14,15 @@ extern "c" fn cfmakeraw(*c.termios) void;
 extern "c" fn setenv([*:0]const u8, [*:0]const u8, c_int) c_int;
 extern "c" fn execv([*:0]const u8, [*:null]const ?[*:0]const u8) c_int;
 
-var masters: [3]c.fd_t = .{ -1, -1, -1 };
-var sizes: [3]c.winsize = @splat(std.mem.zeroes(c.winsize));
+pub const capacity = 32;
+pub var desktop = false;
+var quit_requested = false;
+var original: c.termios = undefined;
+var children: [capacity]c.pid_t = @splat(-1);
+var statuses: [capacity]c_int = @splat(0);
+var main_status: ?c_int = null;
+var masters: [capacity]c.fd_t = @splat(-1);
+var sizes: [capacity]c.winsize = @splat(std.mem.zeroes(c.winsize));
 var count: usize = 2;
 var resized: c_int = 0;
 var stopped: c_int = 0;
@@ -41,7 +48,7 @@ fn writeAll(fd: c.fd_t, bytes: []const u8) c_int {
     return 0;
 }
 pub fn write(slot: c_int, bytes: []const u8) c_int {
-    if (slot < 0 or slot >= count or masters[@intCast(slot)] < 0) return -1;
+    if (slot < 0 or slot >= capacity or masters[@intCast(slot)] < 0) return -1;
     return writeAll(masters[@intCast(slot)], bytes);
 }
 pub fn setSize(slot: c_int, cols: u16, rows: u16, cw: u16, ch: u16) c_int {
@@ -64,16 +71,19 @@ fn reap(pid: c.pid_t, status: *c_int, options: c_int) c.pid_t {
         return result;
     }
 }
-fn cleanupChildren(children: []const c.pid_t, statuses: []c_int) void {
-    // Only process groups created by this host's forkpty calls.
-    for (children, statuses, 0..) |pid, *status, slot| {
-        if (masters[slot] >= 0) _ = c.close(masters[slot]);
-        masters[slot] = -1;
-        if (reap(pid, status, c.W.NOHANG) != 0) continue;
+pub fn quit() void {
+    quit_requested = true;
+}
+fn cleanupSlot(slot: usize) void {
+    const pid = children[slot];
+    if (pid < 0) return;
+    if (masters[slot] >= 0) _ = c.close(masters[slot]);
+    masters[slot] = -1;
+    if (reap(pid, &statuses[slot], c.W.NOHANG) == 0) {
         _ = c.kill(-pid, .HUP);
         var reaped = false;
         for (0..20) |_| {
-            if (reap(pid, status, c.W.NOHANG) != 0) {
+            if (reap(pid, &statuses[slot], c.W.NOHANG) != 0) {
                 reaped = true;
                 break;
             }
@@ -82,18 +92,56 @@ fn cleanupChildren(children: []const c.pid_t, statuses: []c_int) void {
         }
         if (!reaped) {
             _ = c.kill(-pid, .KILL);
-            _ = reap(pid, status, 0);
+            _ = reap(pid, &statuses[slot], 0);
         }
     }
+    children[slot] = -1;
+    if (!desktop and main_status == null and slot == (if (count == 1) @as(usize, 0) else 1)) main_status = statuses[slot];
+}
+fn cleanupChildren() void {
+    for (0..capacity) |slot| cleanupSlot(slot);
+}
+fn anyAlive() bool {
+    for (masters) |fd| if (fd >= 0) return true;
+    return false;
+}
+pub fn spawn(slot: usize, initial: bool) bool {
+    if (children[slot] >= 0) return false;
+    const env_shell = c.getenv("SHELL");
+    const shell: [*:0]const u8 = if (env_shell != null and env_shell.?[0] == '/') env_shell.? else "/bin/sh";
+    const command = c.getenv(if (initial and slot == 0 and count >= 2) "TMUXPP_SIDEBAR_COMMAND" else if (initial and slot == 2) "TMUXPP_FLOAT_COMMAND" else "TMUXPP_COMMAND");
+    const child = forkpty(&masters[slot], null, &original, &sizes[slot]);
+    if (child < 0) {
+        masters[slot] = -1;
+        return false;
+    }
+    if (child == 0) {
+        for (masters, 0..) |fd, i| if (i != slot and fd >= 0) {
+            _ = c.close(fd);
+        };
+        if (setenv("TERM", "xterm-256color", 1) != 0 or setenv("COLORTERM", "truecolor", 1) != 0) c._exit(127);
+        if (command) |cmd| {
+            const argv = [_:null]?[*:0]const u8{ shell, "-c", cmd };
+            _ = execv(shell, &argv);
+        } else {
+            const argv = [_:null]?[*:0]const u8{ shell, "-i" };
+            _ = execv(shell, &argv);
+        }
+        _ = writeAll(2, "exec shell failed\n");
+        c._exit(127);
+    }
+    children[slot] = child;
+    statuses[slot] = 0;
+    return true;
 }
 fn loop(ws: *c.winsize) c_int {
     var dirty = true;
-    var alive = count;
     var input_time: ?u64 = null;
-    while (signalValue(&stopped).* == 0 and alive != 0) {
+    while (signalValue(&stopped).* == 0 and !quit_requested and (desktop or anyAlive())) {
         if (input_time) |time| if (milliseconds() -| time >= 50) {
             if (app.compositor_idle() != 0) return 1;
             input_time = null;
+            dirty = true;
         };
         if (signalValue(&resized).* != 0) {
             signalValue(&resized).* = 0;
@@ -104,19 +152,16 @@ fn loop(ws: *c.winsize) c_int {
             if (app.compositor_draw() != 0) return 1;
             dirty = false;
         }
-        var fds = [_]c.pollfd{
-            .{ .fd = 0, .events = c.POLL.IN, .revents = 0 },
-            .{ .fd = masters[0], .events = c.POLL.IN, .revents = 0 },
-            .{ .fd = masters[1], .events = c.POLL.IN, .revents = 0 },
-            .{ .fd = masters[2], .events = c.POLL.IN, .revents = 0 },
-        };
+        var fds: [capacity + 1]c.pollfd = undefined;
+        fds[0] = .{ .fd = 0, .events = c.POLL.IN, .revents = 0 };
+        for (masters, 0..) |fd, index| fds[index + 1] = .{ .fd = fd, .events = c.POLL.IN, .revents = 0 };
         const ready = c.poll(&fds, fds.len, 50);
         if (ready < 0) {
             if (c.errno(ready) == .INTR) continue;
             return 1;
         }
         var bytes: [16384]u8 = undefined;
-        for (0..count) |slot| {
+        for (0..capacity) |slot| {
             if (masters[slot] < 0 or fds[slot + 1].revents & (c.POLL.IN | c.POLL.HUP | c.POLL.ERR) == 0) continue;
             const n = c.read(masters[slot], &bytes, bytes.len);
             if (n > 0) {
@@ -125,7 +170,7 @@ fn loop(ws: *c.winsize) c_int {
             } else if (n == 0 or c.errno(n) == .IO) {
                 _ = c.close(masters[slot]);
                 masters[slot] = -1;
-                alive -= 1;
+                cleanupSlot(slot);
                 if (app.compositor_exit(@intCast(slot)) != 0) return 1;
                 dirty = true;
             } else if (c.errno(n) != .INTR) return 1;
@@ -146,43 +191,18 @@ fn loop(ws: *c.winsize) c_int {
     return 0;
 }
 pub fn run() c_int {
-    var original: c.termios = undefined;
     var ws: c.winsize = std.mem.zeroes(c.winsize);
     if (c.isatty(0) == 0 or c.isatty(1) == 0 or c.tcgetattr(0, &original) < 0) {
         _ = writeAll(2, "tmuxpp-shell needs a terminal on stdin and stdout\n");
         return 1;
     }
-    count = if (c.getenv("TMUXPP_SINGLE") != null) 1 else if (c.getenv("TMUXPP_FLOAT") != null) 3 else 2;
+    desktop = c.getenv("TMUXPP_DESKTOP") != null or
+        (c.getenv("TMUXPP_SINGLE") == null and c.getenv("TMUXPP_FLOAT") == null and
+            c.getenv("TMUXPP_COMMAND") == null and c.getenv("TMUXPP_SIDEBAR_COMMAND") == null and c.getenv("TMUXPP_LEGACY") == null);
+    count = if (desktop) 0 else if (c.getenv("TMUXPP_SINGLE") != null) 1 else if (c.getenv("TMUXPP_FLOAT") != null) 3 else 2;
     if (geometry(&ws) < 0 or ws.col == 0 or ws.row == 0) return 1;
-    const env_shell = c.getenv("SHELL");
-    const shell: [*:0]const u8 = if (env_shell != null and env_shell.?[0] == '/') env_shell.? else "/bin/sh";
-    var children: [3]c.pid_t = .{ -1, -1, -1 };
-    var statuses: [3]c_int = .{ 0, 0, 0 };
-    var spawned: usize = 0;
-    defer cleanupChildren(children[0..spawned], statuses[0..spawned]);
-    for (0..count) |slot| {
-        const command = c.getenv(if (slot == 0 and count >= 2) "TMUXPP_SIDEBAR_COMMAND" else if (slot == 2) "TMUXPP_FLOAT_COMMAND" else "TMUXPP_COMMAND");
-        const child = forkpty(&masters[slot], null, &original, &sizes[slot]);
-        if (child < 0) {
-            _ = writeAll(2, "forkpty failed\n");
-            return 1;
-        }
-        if (child == 0) {
-            for (masters[0..slot]) |fd| _ = c.close(fd);
-            if (setenv("TERM", "xterm-256color", 1) != 0 or setenv("COLORTERM", "truecolor", 1) != 0) c._exit(127);
-            if (command) |cmd| {
-                const argv = [_:null]?[*:0]const u8{ shell, "-c", cmd };
-                _ = execv(shell, &argv);
-            } else {
-                const argv = [_:null]?[*:0]const u8{ shell, "-i" };
-                _ = execv(shell, &argv);
-            }
-            _ = writeAll(2, "exec shell failed\n");
-            c._exit(127);
-        }
-        children[slot] = child;
-        spawned += 1;
-    }
+    defer cleanupChildren();
+    for (0..count) |slot| if (!spawn(slot, true)) return 1;
     const signals = [_]c.SIG{ .WINCH, .TERM, .HUP, .INT, .PIPE };
     var saved: [signals.len]c.Sigaction = undefined;
     var action = std.mem.zeroes(c.Sigaction);
@@ -208,10 +228,9 @@ pub fn run() c_int {
     }
     if (writeAll(1, "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J") != 0) return 1;
     const result = loop(&ws);
-    cleanupChildren(children[0..spawned], statuses[0..spawned]);
-    spawned = 0;
+    cleanupChildren();
     if (signalValue(&stopped).* != 0) return 128 + signalValue(&stopped).*;
     if (result != 0) return result;
-    const status: u32 = @bitCast(statuses[if (count == 1) 0 else 1]);
+    const status: u32 = @bitCast(main_status orelse 0);
     return if (c.W.IFEXITED(status)) c.W.EXITSTATUS(status) else 128 + @as(c_int, @intCast(@backingInt(c.W.TERMSIG(status))));
 }

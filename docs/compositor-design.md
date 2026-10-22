@@ -134,7 +134,10 @@ Adapt useful tmm code selectively; tmm is a reference, not a dependency.
 The initial geometry and window-management core is implemented in `src/core.zig`
 and `src/geometry.zig`, with headless tests and a static layout demo. A separate
 `src/terminal.zig` adapter retains VT state and decoded Kitty images. The initial
-[shell host](shell-host.md) renders a docked shell and a main shell with independent
-input focus and basic Kitty placements. An optional third shell now supports floating, moving, resizing, and hide/reveal.
+[shell host](shell-host.md) starts with an empty desktop and creates floating
+shells on demand. Drag previews support nested tiles and reserved walls;
+Option-drag undocks and Escape cancels. Running shells keep their PTYs across
+layout changes. Borders, resizing, independent focus, and basic Kitty placements
+are implemented.
 Full graphics composition and reconnect remain pending. See
 [core API notes](core-api.md) for the current implementation's limits.

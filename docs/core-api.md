@@ -38,6 +38,11 @@ basis points from 0 through 10000. The first child receives the rounded-down
 share and the second receives the remainder. Removing a tile collapses its
 branch. Hidden tiles release their share without losing their tree position.
 Adding a tile splits the whole tiled area; `splitTile` targets a particular leaf.
+`placeTile(id, target, edge)` moves an existing window into a 50/50 split beside
+that target. A null target splits the entire tree. It preserves the window ID,
+collapses the old branch if needed, and rejects invalid targets before mutation.
+`src/docking.zig` computes destinations and previews by applying them to a scene
+copy. The host owns pointer gestures and process lifetime.
 
 Floats retain requested bounds and receive actual bounds constrained to the
 remaining usable rectangle. Shrinking the display can shrink a float; enlarging
@@ -54,9 +59,8 @@ reserved space, including always-on-top floats.
   requested extents when space runs out. No negative dimensions are generated.
 - Full-root invalidation rather than incremental damage rectangles.
 - The separate terminal adapter is documented in [terminal adapter notes](terminal-adapter.md).
-  A [two-shell host](shell-host.md) and initial renderer now exercise docking,
-  per-window focus, and mouse capture. Floating-window controls and attachment
-  transport remain pending.
+  The [desktop host](shell-host.md) exercises docking, floating-window controls,
+  per-window focus, and mouse capture. Attachment transport remains pending.
   The layout demo is still a static textual projection of IDs.
 
 The tests exercise odd split sizes, negative origins, dock ordering after slot

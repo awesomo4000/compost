@@ -117,6 +117,51 @@ pub const Scene = struct {
         self.layout();
         return id;
     }
+    /// Place an existing window beside a tile, or beside the whole tree when
+    /// target is null. Preserve its ID; failures leave the scene unchanged.
+    pub fn placeTile(self: *Scene, id: Id, target: ?Id, edge: Edge) !void {
+        var next = self.*;
+        _ = try next.window(id);
+        if (target == id) return error.InvalidSplit;
+        if (target) |other| {
+            const w = next.get(other) orelse return error.UnknownWindow;
+            if (w.options.kind != .tiled or !w.visible) return error.NotTiled;
+        }
+        if (next.tree) |root| next.tree = next.removeLeaf(root, id);
+        const window_ptr = try next.window(id);
+        window_ptr.options = .{ .kind = .tiled };
+        window_ptr.visible = true;
+        var anchor = next.tree;
+        if (target) |other| {
+            anchor = null;
+            for (next.nodes, 0..) |maybe, index| if (maybe) |node| {
+                if (node == .leaf and node.leaf == other) {
+                    anchor = index;
+                    break;
+                }
+            };
+        }
+        if (anchor) |index| {
+            const old = next.nodes[index].?;
+            const old_index = next.freeNode();
+            next.nodes[old_index] = old;
+            const new_index = next.freeNode();
+            next.nodes[new_index] = .{ .leaf = id };
+            const before = edge == .left or edge == .top;
+            next.nodes[index] = .{ .split = .{
+                .axis = if (edge == .left or edge == .right) .horizontal else .vertical,
+                .first = if (before) new_index else old_index,
+                .second = if (before) old_index else new_index,
+                .ratio = 5000,
+            } };
+        } else {
+            const index = next.freeNode();
+            next.nodes[index] = .{ .leaf = id };
+            next.tree = index;
+        }
+        next.layout();
+        self.* = next;
+    }
     fn removeLeaf(self: *Scene, index: usize, id: Id) ?usize {
         switch (self.nodes[index].?) {
             .leaf => |leaf| {

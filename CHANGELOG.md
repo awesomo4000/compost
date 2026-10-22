@@ -2,6 +2,8 @@
 
 ## 10/22/2026
 
+- Added an empty desktop, Ctrl-] Enter shell creation, Ctrl-] q shutdown, and reusable PTY slots. Added drag-to-tile previews, nested target splits, reserved wall drops, Option-drag undocking with remembered floating sizes, and Escape cancellation. Layout changes preserve running children. Kept the earlier layouts behind environment options and added geometry and desktop PTY regressions.
+
 - Added four corner resize handles with larger border hit areas and diagonal hover arrows; each resizes two edges while preserving the opposite corner. Fixed shared-divider dragging to preserve keyboard focus and use the active adjacent terminal border color.
 
 - Added terminal borders with reserved content space, focus colors, and brighter hover feedback on draggable edges. Float-border dragging resizes only that edge; one shared divider resizes sidebar/main widths. Option-drag inside a float moves it. Removed Shift-Option resizing to preserve terminal rectangular selection. Added border rendering and interaction tests.

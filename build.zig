@@ -19,6 +19,13 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     }) });
     test_step.dependOn(&b.addRunArtifact(input_tests).step);
+    const docking_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/docking.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "compositor", .module = core }},
+    }) });
+    test_step.dependOn(&b.addRunArtifact(docking_tests).step);
     const vt = b.dependency("ghostty_vt", .{
         .target = target,
         .optimize = optimize,
@@ -58,7 +65,7 @@ pub fn build(b: *std.Build) void {
     if (target.result.os.tag == .linux) shell.root_module.linkSystemLibrary("util", .{});
     b.installArtifact(shell);
     b.installArtifact(terminal_demo);
-    b.step("shell", "Run docked and main interactive shells").dependOn(&b.addRunArtifact(shell).step);
+    b.step("shell", "Run the interactive compositor desktop").dependOn(&b.addRunArtifact(shell).step);
     const renderer_tests = b.addTest(.{ .root_module = b.createModule(.{
         .root_source_file = b.path("src/renderer.zig"),
         .target = target,

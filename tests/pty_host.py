@@ -17,12 +17,15 @@ BINARY = Path(__file__).resolve().parents[1] / "zig-out/bin/tmuxpp-shell"
 
 
 class Host:
-    def __init__(self, command, sidebar=None, floating=None):
+    def __init__(self, command, sidebar=None, floating=None, desktop=False):
         self.master, self.slave = pty.openpty()
         self.resize(24, 80)
         self.original = termios.tcgetattr(self.slave)
         self.data = bytearray()
         env = dict(os.environ, SHELL="/bin/sh", TMUXPP_COMMAND=command)
+        env.pop("TMUXPP_DESKTOP", None)
+        if desktop:
+            env["TMUXPP_DESKTOP"] = "1"
         if sidebar is None:
             env["TMUXPP_SINGLE"] = "1"
         else:

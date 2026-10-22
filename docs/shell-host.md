@@ -1,19 +1,33 @@
 # Interactive shell host
 
-`mise run shell` starts two independent shells: a left edge dock and a main tile.
-The dock reserves up to 24 columns, capped at one third of the display width.
-The main tile starts focused. On extremely narrow displays the dock can have
-zero visible area while its shell retains its previous valid terminal size.
-`zig build` installs `zig-out/bin/tmuxpp-shell` and both demos. The host uses
-`$SHELL`, falling back to `/bin/sh`. `exit` and Ctrl-D use the shell's ordinary
-behavior. When a shell closes, the survivor fills the root and receives focus.
-The host exits when both close, returning the main shell's status.
+`mise run shell` opens an empty desktop. Ctrl-] Enter creates a floating shell,
+using `$SHELL` or `/bin/sh`. Up to 32 shells can run. Closing the last shell
+returns to the desktop; Ctrl-] q closes all children and quits.
 
-Click a window or press Ctrl-] followed by Tab to focus it. Ctrl-] twice sends a
-literal Ctrl-]. This leaves the user's tmux prefix available to tmux.
-`TMUXPP_SINGLE=1` selects the original full-root shell layout. `TMUXPP_COMMAND`
-supplies the main shell command for automated checks; `TMUXPP_SIDEBAR_COMMAND`
-supplies the dock command. Without these variables, each runs an interactive shell.
+Option-left-drag moves a float. Option-dragging a tiled or wall border pulls it
+out after a small movement threshold, restoring its remembered floating size.
+Drag near a workspace edge to split the whole tiled area, or near a tile edge
+to split that tile. A blue rectangle previews the destination. Release commits;
+Escape restores the original layout. Each split starts at 50/50. Hold Control
+during the move to create a wall at a workspace edge instead. Walls reserve one
+third of the available dimension. Existing shells retain their PTYs and IDs.
+The preview does not resize neighbors until release. General tiled-divider and
+four-sided wall resizing remain future work; float edges/corners and the legacy
+left sidebar divider support dragging today. At the 32-window limit there is no
+spare scene slot for the preview overlay.
+
+Click or Ctrl-] Tab focuses a window. Ctrl-] twice sends a literal Ctrl-].
+The user's tmux prefix passes through. Ctrl-] f toggles a floating window.
+
+`TMUXPP_LEGACY=1` starts the original left dock and main tile. `TMUXPP_SINGLE=1`
+starts a single full-root shell; `TMUXPP_FLOAT=1` adds the third floating shell.
+These legacy layouts exit when their children close and return the main shell's
+status. `TMUXPP_COMMAND`, `TMUXPP_SIDEBAR_COMMAND`, and `TMUXPP_FLOAT_COMMAND`
+provide fixture commands. `TMUXPP_DESKTOP=1` forces empty-desktop startup even
+when those variables are set. In desktop mode each new shell uses TMUXPP_COMMAND
+if provided. Desktop quit returns zero.
+
+`zig build` installs `zig-out/bin/tmuxpp-shell` and both demos.
 
 The window model remains terminal-independent. `src/shell.zig` connects it to
 the terminal adapter and renderer. `src/host.zig` handles POSIX PTYs, tty modes, polling, signals, and child cleanup.

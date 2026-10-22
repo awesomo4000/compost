@@ -6,15 +6,13 @@ tiling, docking, floating windows, focus, and visibility without knowing about
 terminals. A terminal adapter supplies libghostty-vt emulation and Kitty graphics.
 
 The [compositor design](docs/compositor-design.md) describes the current direction.
-The current host provides a docked shell and a main shell. Interactive tiling,
-constrained floats, and reconnectable display attachment are later milestones.
+The host starts with an empty desktop. Create floating shells, drag them into
+nested tiles, or reserve edge walls for controllers. Each shell keeps the same
+process while its layout changes. Detach/reattach remains future work.
 
-The geometry and window-management core is implemented and tested independently
-of terminals. A separate libghostty-vt adapter now retains terminal screens,
-protocol state, and Kitty images. The POSIX host runs two interactive shells,
-with a left dock and a main window, and renders text and basic Kitty placements. The runnable
-tmux config below separately demonstrates upstream tmux's format-based side status. The [roadmap](docs/roadmap.md) also
-records tmux graphics work and longer-term Zig 0.17.0 build and native Windows work.
+The POSIX host uses libghostty-vt for retained terminal screens and basic Kitty
+placements. The optional tmux config below separately demonstrates upstream
+format-based side status. See the [roadmap](docs/roadmap.md) for remaining work.
 
 ## Run the core
 
@@ -40,14 +38,23 @@ for ownership, bounds, and initial limitations.
 mise run shell
 ```
 
-This opens two independent `$SHELL` processes. The main window starts focused.
-Click either window, or press **Ctrl-] then Tab**, to switch focus. Ctrl-] twice
-sends a literal Ctrl-] to the shell. Your tmux prefix and other ordinary keys
+The desktop starts empty. **Ctrl-] then Enter** creates a floating `$SHELL`.
+Click a window, or press **Ctrl-] then Tab**, to switch focus. Ctrl-] twice
+sends a literal Ctrl-] to the shell. Ordinary keys, including your tmux prefix,
 pass through to the focused shell.
 
-Use `exit` or Ctrl-D in each shell to leave. Closing either shell expands the
-survivor to the full display. For the original single-shell layout, run
-`TMUXPP_SINGLE=1 ./zig-out/bin/tmuxpp-shell`.
+- Option-left-drag moves a window. On a tiled border it pulls the tile out.
+- Drag near a workspace edge or a tile edge to see a blue docking preview.
+  Release to dock; Escape cancels the drag. New splits divide the target equally.
+- Hold Control during an Option-drag to a workspace edge to create a reserved wall.
+- Drag a floating border or corner to resize it.
+- `exit` closes a shell; closing the last returns to the desktop.
+- **Ctrl-] then q** quits the compositor and closes all its shells.
+
+`TMUXPP_LEGACY=1` starts the earlier sidebar/main layout.
+`TMUXPP_SINGLE=1` starts a full-root shell; `TMUXPP_FLOAT=1` starts sidebar,
+main, and floating shells. `TMUXPP_DESKTOP=1` forces an empty desktop when
+using command environment variables for testing.
 
 To install optimized binaries at predictable paths:
 
@@ -59,7 +66,7 @@ mise exec -- zig build -Doptimize=fast
 Use `-Doptimize=small` for the smaller build. `zig build` also installs
 `terminal-demo` and `layout-demo` under `zig-out/bin/`.
 
-The left dock is up to 24 columns wide and shrinks on narrow displays. This host
+The legacy left dock is up to 24 columns wide and shrinks on narrow displays. This host
 is tested on macOS. An optional floating shell is available with `TMUXPP_FLOAT=1`; Alt-left-drag
 moves it, dragging a border resizes that edge, and Ctrl-] then `f` hides or shows it.
 Borders brighten on hover; the dock and main terminal share one draggable divider.

@@ -2,18 +2,23 @@ const std = @import("std");
 const core = @import("compositor");
 const terminal = @import("terminal");
 const input = @import("input.zig");
+const docking = @import("docking.zig");
 const decoration = @import("frame.zig");
 const Renderer = @import("renderer.zig").Renderer;
 pub const std_options: std.Options = .{ .log_level = .warn };
 const host = @import("host.zig");
-const Slot = struct { index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null };
-var slots = [_]Slot{
-    .{ .index = 0, .renderer = .{ .next_image = 1, .image_stride = 3, .framed = false, .bordered = true } },
-    .{ .index = 1, .renderer = .{ .next_image = 2, .image_stride = 3, .framed = false, .bordered = true } },
-    .{ .index = 2, .renderer = .{ .next_image = 3, .image_stride = 3, .framed = false, .bordered = true } },
+const Slot = struct { index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
+var slots: [host.capacity]Slot = init: {
+    var result: [host.capacity]Slot = undefined;
+    for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true } };
+    break :init result;
 };
-const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge };
+const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, started: bool = false };
 var drag: ?Drag = null;
+var drag_original: ?core.Scene = null;
+var drag_dock_extent: ?i32 = null;
+var destination: ?docking.Destination = null;
+var initialized = false;
 var border_capture = false;
 var hover_id: ?core.Id = null;
 var hover_edge: ?decoration.Edge = null;
@@ -59,7 +64,7 @@ fn focused() ?*Slot {
 }
 fn focus(id: core.Id) !void {
     if (scene.focus == id) return;
-    if (slots[2].surface != null and id == slots[2].id) float_return_focus = scene.focus;
+    if (scene.get(id).?.options.kind == .floating) float_return_focus = scene.focus;
     if (focused()) |slot| if (slot.surface.?.terminal.modes.get(.focus_event)) try write(slot, "\x1b[O");
     try scene.setFocus(id);
     if (focused()) |slot| if (slot.surface.?.terminal.modes.get(.focus_event)) try write(slot, "\x1b[I");
@@ -85,7 +90,8 @@ fn resize(cols: u16, rows: u16, cw: u16, ch: u16, requested_count: c_int) !void 
     pixel_height = if (cw == 0) 0 else ch;
     const root = try core.Rect.init(0, 0, cols, rows);
     const extent = if (dock_extent) |width| @min(width, @max(0, @as(i32, cols) - 3)) else @min(24, cols / 3);
-    if (count == 0) {
+    if (!initialized) {
+        initialized = true;
         count = @intCast(requested_count);
         scene = try core.Scene.init(root);
         for (slots[0..count], 0..) |*slot, i| {
@@ -104,13 +110,13 @@ fn resize(cols: u16, rows: u16, cw: u16, ch: u16, requested_count: c_int) !void 
             }, .{ .context = slot, .write = write });
             if (host.setSize(slot.index, slot.surface.?.size.columns, slot.surface.?.size.rows, pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
         }
-        try scene.setFocus(slots[if (count == 1) 0 else 1].id);
+        if (count != 0) try scene.setFocus(slots[if (count == 1) 0 else 1].id);
     } else {
-        drag = null;
+        try cancelDrag();
         border_capture = false;
         scene.releasePointer();
         try scene.resizeRoot(root);
-        if (count >= 2 and slots[0].surface != null and slots[1].surface != null)
+        if (count >= 2 and slots[0].surface != null and slots[1].surface != null and scene.get(slots[0].id).?.options.kind == .docked)
             try scene.configure(slots[0].id, .{ .kind = .{ .docked = .{ .edge = .left, .extent = extent } }, .always_on_top = true });
         try applyLayout();
     }
@@ -129,8 +135,52 @@ pub fn compositor_output(index: c_int, bytes: []const u8) c_int {
     };
     return 0;
 }
+fn restoreDrag() void {
+    if (drag_original) |original| {
+        scene = original;
+        dock_extent = drag_dock_extent;
+        for (&slots) |*slot| slot.renderer.region_scene = null;
+    }
+    drag = null;
+    drag_original = null;
+    destination = null;
+    scene.releasePointer();
+}
+fn cancelDrag() !void {
+    restoreDrag();
+    try applyLayout();
+}
+fn newShell() !void {
+    if (drag != null) try cancelDrag();
+    var free: ?*Slot = null;
+    for (&slots) |*slot| if (slot.surface == null) {
+        free = slot;
+        break;
+    };
+    const slot = free orelse return;
+    const area = scene.usable;
+    if (area.w < 3 or area.h < 3) return;
+    const w = @max(3, @divTrunc(area.w * 2, 3));
+    const h = @max(3, @divTrunc(area.h * 2, 3));
+    slot.id = try scene.add(.{ .kind = .{ .floating = try core.Rect.init(area.x + @divTrunc(area.w - w, 2), area.y + @divTrunc(area.h - h, 2), w, h) } });
+    errdefer scene.remove(slot.id) catch {};
+    const bounds = decoration.contentFor(&scene, slot.id);
+    slot.renderer.invalidate(allocator);
+    slot.floating_bounds = null;
+    slot.drawn_revision = null;
+    slot.surface = try terminal.Surface.create(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write });
+    errdefer {
+        slot.surface.?.destroy();
+        slot.surface = null;
+    }
+    if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0 or !host.spawn(@intCast(slot.index), false)) return error.ChildSpawnFailed;
+    try focus(slot.id);
+    try applyLayout();
+}
 fn event(_: *anyopaque, value: input.Event) !void {
     switch (value) {
+        .new_shell => try newShell(),
+        .quit => host.quit(),
         .toggle_focus => {
             const start: usize = if (focused()) |slot| @intCast(slot.index) else 0;
             for (1..slots.len + 1) |offset| {
@@ -142,23 +192,36 @@ fn event(_: *anyopaque, value: input.Event) !void {
             }
         },
         .toggle_float => {
-            const slot = &slots[2];
-            if (slot.surface == null or scene.get(slot.id).?.options.kind != .floating) return;
-            const show = !scene.get(slot.id).?.visible;
-            if (show) float_return_focus = scene.focus else {
-                if (float_return_focus) |id| if (scene.get(id)) |w| {
-                    if (w.visible and !w.bounds.empty()) try focus(id);
+            var candidate = focused();
+            if (candidate == null or scene.get(candidate.?.id).?.options.kind != .floating) {
+                candidate = null;
+                for (&slots) |*slot| if (slot.surface != null and scene.get(slot.id).?.options.kind == .floating) {
+                    candidate = slot;
+                    break;
                 };
             }
-            drag = null;
+            const slot = candidate orelse return;
+            if (drag != null) try cancelDrag();
+            const show = !scene.get(slot.id).?.visible;
+            if (show) float_return_focus = scene.focus else {
+                if (float_return_focus) |id| if (scene.get(id)) |window| {
+                    if (window.visible and !window.bounds.empty() and id != slot.id) try focus(id);
+                };
+            }
             scene.releasePointer();
             try scene.setVisible(slot.id, show);
             try applyLayout();
             if (show and !scene.get(slot.id).?.bounds.empty()) try focus(slot.id);
         },
-        .bytes => |bytes| if (focused()) |slot| {
-            if ((std.mem.eql(u8, bytes, "\x1b[200~") or std.mem.eql(u8, bytes, "\x1b[201~")) and !slot.surface.?.terminal.modes.get(.bracketed_paste)) return;
-            try write(slot, bytes);
+        .bytes => |bytes| {
+            if (drag != null and std.mem.eql(u8, bytes, "\x1b")) {
+                try cancelDrag();
+                return;
+            }
+            if (focused()) |slot| {
+                if ((std.mem.eql(u8, bytes, "\x1b[200~") or std.mem.eql(u8, bytes, "\x1b[201~")) and !slot.surface.?.terminal.modes.get(.bracketed_paste)) return;
+                try write(slot, bytes);
+            }
         },
         .focus => |is_focused| if (focused()) |slot| {
             if (slot.surface.?.terminal.modes.get(.focus_event)) try write(slot, if (is_focused) "\x1b[I" else "\x1b[O");
@@ -175,13 +238,39 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 if (mouse.release) border_capture = false;
                 return;
             }
-            if (drag) |active| {
+            if (drag) |original_active| {
+                var active = original_active;
                 if (mouse.release) {
+                    if (active.started) if (destination) |drop| {
+                        for (&slots) |*slot| if (slot.surface != null and slot.id == active.id) {
+                            slot.floating_bounds = scene.get(active.id).?.bounds;
+                        };
+                        try drop.apply(&scene, active.id);
+                    };
                     drag = null;
+                    drag_original = null;
+                    destination = null;
                     scene.releasePointer();
+                    try applyLayout();
                 } else if (mouse.button & 32 != 0) {
                     const dx = @as(i32, mouse.x) - active.x;
                     const dy = @as(i32, mouse.y) - active.y;
+                    if (active.edge == .move and !active.started) {
+                        if (@abs(dx) < 2 and @abs(dy) < 1) return;
+                        if (scene.get(active.id).?.options.kind != .floating) {
+                            var remembered: ?core.Rect = null;
+                            for (&slots) |*slot| if (slot.surface != null and slot.id == active.id) {
+                                remembered = slot.floating_bounds;
+                            };
+                            const w = if (remembered) |r| r.w else @max(3, @divTrunc(scene.root.w * 2, 3));
+                            const h = if (remembered) |r| r.h else @max(3, @divTrunc(scene.root.h * 2, 3));
+                            active.bounds = try core.Rect.init(active.x - @divTrunc((active.x - active.bounds.x) * w, @max(1, active.bounds.w)), active.y - @divTrunc((active.y - active.bounds.y) * h, @max(1, active.bounds.h)), w, h);
+                            drag.?.bounds = active.bounds;
+                        }
+                        try scene.configure(active.id, .{ .kind = .{ .floating = active.bounds } });
+                        try scene.raise(active.id);
+                    }
+                    drag.?.started = true;
                     if (active.edge == .divider) {
                         const extent = std.math.clamp(active.bounds.w + dx, @min(3, scene.root.w), @max(3, scene.root.w - 3));
                         dock_extent = extent;
@@ -190,6 +279,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                         const requested = decoration.adjust(active.bounds, active.edge, dx, dy, scene.usable);
                         try scene.moveResize(active.id, requested);
                     }
+                    destination = if (active.edge == .move) docking.pick(&scene, active.id, mouse.x, mouse.y, mouse.button & 16 != 0) else null;
                     try applyLayout();
                 }
                 return;
@@ -197,16 +287,20 @@ fn event(_: *anyopaque, value: input.Event) !void {
             const target = scene.pointerTarget(mouse.x, mouse.y) orelse return;
             const press = !mouse.release and mouse.button & 96 == 0 and mouse.button & 3 != 3;
             if (press) {
-                const border_edge = decoration.edgeAt(&scene, target, mouse.x, mouse.y);
-                if (border_edge != .divider) try focus(target);
                 const window = scene.get(target).?;
                 const inner = decoration.contentFor(&scene, target);
                 const on_border = !inner.contains(mouse.x, mouse.y);
                 const modified = mouse.button & 8 != 0 and mouse.button & 4 == 0 and (mouse.button & 3 == 0 or mouse.button & 3 == 2);
-                if ((border_edge != null and mouse.button & 3 == 0) or
+                const border_edge = decoration.edgeAt(&scene, target, mouse.x, mouse.y);
+                const moving = modified and mouse.button & 3 == 0 and (on_border or mouse.button & 16 == 0);
+                if (border_edge != .divider or moving) try focus(target);
+                if (moving or (border_edge != null and mouse.button & 3 == 0) or
                     (window.options.kind == .floating and !on_border and modified))
                 {
-                    const action = border_edge orelse (if (mouse.button & 3 == 2 or mouse.button & 16 != 0) decoration.Edge.bottom_right else decoration.Edge.move);
+                    const action = if (moving) decoration.Edge.move else border_edge orelse decoration.Edge.bottom_right;
+                    drag_original = scene;
+                    drag_dock_extent = dock_extent;
+                    destination = null;
                     drag = .{ .id = target, .x = mouse.x, .y = mouse.y, .bounds = window.bounds, .edge = action };
                     try scene.capturePointer(target);
                     return;
@@ -258,18 +352,37 @@ pub fn compositor_idle() c_int {
     };
     return 0;
 }
+fn hasShells() bool {
+    for (&slots) |*slot| if (slot.surface != null) return true;
+    return false;
+}
 fn draw() !void {
     var changed = borders_dirty or layout_dirty or drawn_scene != scene.revision;
     for (&slots) |*slot| if (slot.surface) |s| {
         changed = changed or slot.drawn_revision != s.revision;
     };
     if (!changed) return;
+    var render_scene = scene;
+    var preview: ?core.Rect = null;
+    if (destination) |drop| if (drag) |active| {
+        if (render_scene.next_id < std.math.maxInt(u64)) {
+            const rect = try drop.preview(&scene, active.id);
+            if (!rect.empty()) {
+                const overlay = render_scene.add(.{ .kind = .{ .floating = rect }, .always_on_top = true }) catch null;
+                if (overlay) |id| preview = render_scene.get(id).?.bounds;
+            }
+        }
+    };
     try display("\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[0m");
     if (layout_dirty) try display("\x1b[2J");
     for (&slots) |*slot| if (slot.surface) |s| {
-        if (layout_dirty) slot.renderer.invalidate(allocator);
+        if (layout_dirty) {
+            slot.renderer.invalidate(allocator);
+            // Preview scenes and cancelled layouts can reuse a revision number.
+            slot.renderer.region_scene = null;
+        }
         if (!layout_dirty and slot.drawn_revision == s.revision) continue;
-        const frame = try slot.renderer.draw(allocator, &scene, slot.id, s);
+        const frame = try slot.renderer.draw(allocator, &render_scene, slot.id, s);
         try display(frame);
         slot.drawn_revision = s.revision;
     };
@@ -277,7 +390,23 @@ fn draw() !void {
         if (border_output == null) border_output = .init(allocator);
         const output = &border_output.?;
         output.clearRetainingCapacity();
-        for (&slots) |*slot| if (slot.surface != null) try decoration.draw(&output.writer, &scene, slot.id, if (hover_id == slot.id) hover_edge else null);
+        for (&slots) |*slot| if (slot.surface != null) try decoration.draw(&output.writer, &render_scene, slot.id, if (hover_id == slot.id) hover_edge else null);
+        if (preview) |rect| {
+            try output.writer.writeAll("\x1b[0;44m");
+            var y = rect.y;
+            while (y < rect.bottom()) : (y += 1) {
+                try output.writer.print("\x1b[{d};{d}H", .{ y + 1, rect.x + 1 });
+                try output.writer.splatByteAll(' ', @intCast(rect.w));
+            }
+            try output.writer.writeAll("\x1b[0m");
+        }
+        if (!hasShells()) {
+            const label = "tmux++";
+            const hint = "Ctrl-] Enter: shell   Ctrl-] q: quit";
+            if (scene.root.w >= hint.len and scene.root.h >= 4) {
+                try output.writer.print("\x1b[{d};{d}H\x1b[36mtmux++\x1b[0m\x1b[{d};{d}H{s}", .{ @divTrunc(scene.root.h, 2), @divTrunc(scene.root.w - @as(i32, label.len), 2) + 1, @divTrunc(scene.root.h, 2) + 2, @divTrunc(scene.root.w - @as(i32, hint.len), 2) + 1, hint });
+            }
+        }
         try display(output.written());
     }
     // Capture clicks and drags even when the focused shell has not requested mouse input.
@@ -298,7 +427,7 @@ fn draw() !void {
             var buf: [80]u8 = undefined;
             const x = bounds.x + @as(i32, p.x);
             const y = bounds.y + @as(i32, @intCast(p.y));
-            if (scene.hitTest(x, y) == slot.id)
+            if (render_scene.hitTest(x, y) == slot.id)
                 try display(try std.mem.print(&buf, "\x1b[{d};{d}H\x1b[?25h", .{ y + 1, x + 1 }));
         };
     }
@@ -323,10 +452,15 @@ fn clearImages(slot: *Slot) void {
     }
 }
 pub fn compositor_exit(index: c_int) c_int {
+    if (drag != null) restoreDrag();
     const slot = &slots[@intCast(index)];
     clearImages(slot);
     slot.surface.?.destroy();
     slot.surface = null;
+    const next_image = slot.renderer.next_image;
+    slot.renderer.deinit(allocator);
+    slot.renderer = .{ .next_image = next_image, .image_stride = host.capacity, .framed = false, .bordered = true };
+    slot.drawn_revision = null;
     scene.remove(slot.id) catch |err| {
         failure = err;
         return -1;
@@ -335,7 +469,7 @@ pub fn compositor_exit(index: c_int) c_int {
     scene.releasePointer();
     // Keep the float floating while a base shell remains. Promote the last
     // shell to a visible full-root tile so a hidden child cannot strand exit.
-    for (&slots) |*other| if (other.surface != null) {
+    if (!host.desktop) for (slots[0..@min(count, 3)]) |*other| if (other.surface != null) {
         const promote = if (other.index == 2)
             slots[0].surface == null and slots[1].surface == null
         else

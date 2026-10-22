@@ -181,3 +181,24 @@ test "rectangle subtraction covers exactly the difference including negative ori
         }
     }
 }
+
+test "docking existing windows splits only the target and preserves identities" {
+    var scene = try Scene.init(rect(0, 0, 80, 24));
+    const a = try scene.add(.{ .kind = .tiled });
+    const b = try scene.add(.{ .kind = .{ .floating = rect(10, 4, 30, 12) } });
+    const c = try scene.add(.{ .kind = .{ .floating = rect(12, 5, 30, 12) } });
+    try scene.placeTile(b, null, .left);
+    try equal(rect(0, 0, 40, 24), scene.get(b).?.bounds);
+    try equal(rect(40, 0, 40, 24), scene.get(a).?.bounds);
+    try scene.placeTile(c, b, .bottom);
+    try equal(rect(0, 12, 40, 12), scene.get(c).?.bounds);
+    try equal(rect(0, 0, 40, 12), scene.get(b).?.bounds);
+    try equal(rect(40, 0, 40, 24), scene.get(a).?.bounds);
+    const revision = scene.revision;
+    try std.testing.expectError(error.InvalidSplit, scene.placeTile(b, b, .left));
+    try equal(revision, scene.revision);
+    try scene.configure(c, .{ .kind = .{ .floating = rect(10, 4, 30, 12) } });
+    try equal(rect(0, 0, 40, 24), scene.get(b).?.bounds);
+    try scene.placeTile(c, a, .right);
+    try equal(rect(60, 0, 20, 24), scene.get(c).?.bounds);
+}
