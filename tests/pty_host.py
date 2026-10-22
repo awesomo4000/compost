@@ -17,7 +17,7 @@ BINARY = Path(__file__).resolve().parents[1] / "zig-out/bin/tmuxpp-shell"
 
 
 class Host:
-    def __init__(self, command, sidebar=None):
+    def __init__(self, command, sidebar=None, floating=None):
         self.master, self.slave = pty.openpty()
         self.resize(24, 80)
         self.original = termios.tcgetattr(self.slave)
@@ -28,6 +28,11 @@ class Host:
         else:
             env.pop("TMUXPP_SINGLE", None)
             env["TMUXPP_SIDEBAR_COMMAND"] = sidebar
+        env.pop("TMUXPP_FLOAT", None)
+        env.pop("TMUXPP_FLOAT_COMMAND", None)
+        if floating is not None:
+            env["TMUXPP_FLOAT"] = "1"
+            env["TMUXPP_FLOAT_COMMAND"] = floating
         self.process = subprocess.Popen([str(BINARY)], stdin=self.slave,
                                         stdout=self.slave, stderr=self.slave,
                                         env=env, start_new_session=True)

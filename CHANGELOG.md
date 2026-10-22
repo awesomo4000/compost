@@ -2,6 +2,18 @@
 
 ## 10/22/2026
 
+- Added four corner resize handles with larger border hit areas and diagonal hover arrows; each resizes two edges while preserving the opposite corner. Fixed shared-divider dragging to preserve keyboard focus and use the active adjacent terminal border color.
+
+- Added terminal borders with reserved content space, focus colors, and brighter hover feedback on draggable edges. Float-border dragging resizes only that edge; one shared divider resizes sidebar/main widths. Option-drag inside a float moves it. Removed Shift-Option resizing to preserve terminal rectangular selection. Added border rendering and interaction tests.
+
+- Added Control-Alt-left-drag and Alt-Shift-left-drag as trackpad-friendly floating-window resize gestures, retaining Alt-right-drag.
+
+- Added an opt-in third floating shell with click/cycle focus, hide/reveal, Alt-drag movement and resizing, dock constraints, and restoration of covered text and fully visible Kitty images. Moving preserves PTY dimensions; resizing updates them. Added floating-shell integration and renderer occlusion tests. Kept macOS as the active development target.
+
+- Recorded the release policy: retain SIMD, ship static musl Linux executables with broad kernel/CPU compatibility, require only built-in Windows DLLs, and allow macOS libSystem. Require explicit platform baselines and clean-system validation.
+
+- Replaced the C PTY host with Zig, using platform libc types and direct Zig compositor calls. Preserved raw-mode restoration, signal handling, shell startup, resizing, polling, and child cleanup; removed the C source build step.
+
 - Retained renderer frame, scratch, and row-cache storage across updates, cached visibility regions, and removed the frame copy before host output. Added a counting-allocator regression for allocation-free warmed text redraws and repainting.
 
 - Accelerated TUI rendering with contiguous text/style runs, libghostty-vt dirty-row tracking and stable row identities, a reusable encoding buffer, and pooled host allocations. Added incremental scrolling/style round-trips, an acknowledged full-screen redraw benchmark, and a real Vim editing test.

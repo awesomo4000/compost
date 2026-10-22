@@ -1,6 +1,7 @@
 const std = @import("std");
 const vt = @import("ghostty-vt");
 const core = @import("compositor");
+const decoration = @import("frame.zig");
 const terminal = @import("terminal");
 
 /// Row-diff renderer. Owns outer image IDs, never forwards APC bytes.
@@ -13,6 +14,7 @@ pub const Renderer = struct {
     next_image: u32 = 1,
     image_stride: u32 = 1,
     framed: bool = true,
+    bordered: bool = false,
     rows: std.ArrayList(std.ArrayList(u8)) = .empty,
     row_ids: std.ArrayList(vt.RenderState.Row.Id) = .empty,
     text_scene: ?u64 = null,
@@ -44,14 +46,24 @@ pub const Renderer = struct {
     pub fn draw(self: *Renderer, allocator: std.mem.Allocator, scene: *const core.Scene, id: core.Id, surface: *terminal.Surface) ![]const u8 {
         try self.state.update(allocator, &surface.terminal);
         if (self.region_scene != scene.revision or self.region_id != id) {
-            const region = try scene.visibleRegion(allocator, id);
+            var region = try scene.visibleRegion(allocator, id);
+            if (self.bordered) {
+                const inner = decoration.contentFor(scene, id);
+                var kept: usize = 0;
+                for (region.items) |rect| if (rect.intersection(inner)) |clipped| {
+                    region.items[kept] = clipped;
+                    kept += 1;
+                };
+                region.items.len = kept;
+            }
             self.region.deinit(allocator);
             self.region = region;
             self.region_scene = scene.revision;
             self.region_id = id;
         }
         const region = self.region;
-        const bounds = scene.get(id).?.bounds;
+        const outer = scene.get(id).?.bounds;
+        const bounds = if (self.bordered) decoration.contentFor(scene, id) else outer;
         if (self.output == null) self.output = .init(allocator);
         const output = &self.output.?;
         output.clearRetainingCapacity();
@@ -419,4 +431,66 @@ test "warmed text redraws reuse storage without allocations" {
     const repaint = try renderer.draw(alloc, &scene, id, source);
     try std.testing.expect(std.mem.indexOf(u8, repaint, "bbbb") != null);
     try std.testing.expectEqual(allocations, counting.allocations);
+}
+
+test "moving an opaque float restores covered text and Kitty placements" {
+    const alloc = std.testing.allocator;
+    var context: u8 = 0;
+    const base = try terminal.Surface.create(std.testing.io, alloc, .{ .columns = 24, .rows = 6, .cell_width = 8, .cell_height = 16 }, .{ .context = &context, .write = discard });
+    defer base.destroy();
+    const top = try terminal.Surface.create(std.testing.io, alloc, .{ .columns = 8, .rows = 3, .cell_width = 8, .cell_height = 16 }, .{ .context = &context, .write = discard });
+    defer top.destroy();
+    const dest = try terminal.Surface.create(std.testing.io, alloc, base.size, .{ .context = &context, .write = discard });
+    defer dest.destroy();
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 24, 6));
+    const base_id = try scene.add(.{ .kind = .tiled });
+    const top_id = try scene.add(.{ .kind = .{ .floating = try core.Rect.init(3, 1, 8, 3) } });
+    try base.feed("\x1b[2;1Habcdefghijklmnopqrstuvwx\x1b[3;5H\x1b_Ga=T,f=24,s=1,v=1,i=42;/wAA\x1b\\");
+    try top.feed("FLOAT");
+    var base_renderer: Renderer = .{ .framed = false };
+    defer base_renderer.deinit(alloc);
+    var top_renderer: Renderer = .{ .framed = false };
+    defer top_renderer.deinit(alloc);
+    for (0..2) |pass| {
+        if (pass == 1) try scene.moveResize(top_id, try core.Rect.init(12, 2, 8, 3));
+        try dest.feed("\x1b[?7l\x1b[2J");
+        base_renderer.invalidate(alloc);
+        top_renderer.invalidate(alloc);
+        try dest.feed(try base_renderer.draw(alloc, &scene, base_id, base));
+        try dest.feed(try top_renderer.draw(alloc, &scene, top_id, top));
+        const text = try dest.plainText(alloc);
+        defer alloc.free(text);
+        if (pass == 0) {
+            try std.testing.expect(std.mem.indexOf(u8, text, "abcFLOAT   lmnopqrstuvwx") != null);
+            try std.testing.expectEqual(@as(u32, 0), dest.terminal.screens.active.kitty_images.placements.count());
+        } else {
+            try std.testing.expect(std.mem.indexOf(u8, text, "abcdefghijklmnopqrstuvwx") != null);
+            try std.testing.expectEqual(@as(u32, 1), dest.terminal.screens.active.kitty_images.placements.count());
+        }
+    }
+}
+
+test "border cells remain separate from terminal content" {
+    const alloc = std.testing.allocator;
+    var context: u8 = 0;
+    const source = try terminal.Surface.create(std.testing.io, alloc, .{ .columns = 4, .rows = 2 }, .{ .context = &context, .write = discard });
+    defer source.destroy();
+    const dest = try terminal.Surface.create(std.testing.io, alloc, .{ .columns = 6, .rows = 4 }, .{ .context = &context, .write = discard });
+    defer dest.destroy();
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 6, 4));
+    const id = try scene.add(.{ .kind = .tiled });
+    try scene.setFocus(id);
+    var renderer: Renderer = .{ .framed = false, .bordered = true };
+    defer renderer.deinit(alloc);
+    try source.feed("abcd\r\nefgh");
+    try dest.feed("\x1b[?7l");
+    try dest.feed(try renderer.draw(alloc, &scene, id, source));
+    var border: std.Io.Writer.Allocating = .init(alloc);
+    defer border.deinit();
+    try decoration.draw(&border.writer, &scene, id, null);
+    try dest.feed(border.written());
+    const text = try dest.plainText(alloc);
+    defer alloc.free(text);
+    try std.testing.expectEqualStrings("┌────┐\n│abcd│\n│efgh│\n└────┘", text);
+    try std.testing.expectEqual(try core.Rect.init(0, 0, 2, 2), decoration.content(try core.Rect.init(0, 0, 2, 2)));
 }

@@ -17,11 +17,11 @@ try:
     host.resize(30, 100)
     host.process.send_signal(signal.SIGWINCH)
     # Wait for the resized renderer's last row, then let the child read its size.
-    host.until(lambda: b"\x1b[30;1H" in host.data)
+    host.until(lambda: b"\x1b[29;2H" in host.data)
     os.write(host.master, b"hello\r")
     host.finish(7)
     assert b"INPUT:hello" in host.text()
-    assert b"30 100" in host.text(), host.text()[-500:]
+    assert b"28 98" in host.text(), host.text()[-500:]
 finally:
     host.close()
 
@@ -53,14 +53,14 @@ try:
     host.until(lambda: b"CLICK:three" in host.text())
     host.resize(30, 100)
     host.process.send_signal(signal.SIGWINCH)
-    host.until(lambda: b"\x1b[30;1H" in host.data)
+    host.until(lambda: b"\x1b[29;2H" in host.data)
     # The sidebar exits independently; the main shell fills the resized root.
     os.write(host.master, b"\x1d\tdone\r")
     # Poll the main shell size after its text moves into the first column.
-    host.until(lambda: b"\x1b[1;1H\x1b[0mR" in host.data)
+    host.until(lambda: b"\x1b[2;2H\x1b[0mR" in host.data)
     os.write(host.master, b"size\r")
     host.until(lambda: b"EXPANDED" in host.text())
-    assert b"30 100" in host.text()
+    assert b"28 98" in host.text()
     host.process.terminate()
     host.finish(128 + signal.SIGTERM)
 finally:
@@ -81,10 +81,10 @@ with tempfile.TemporaryDirectory(prefix="tmuxpp-input-", dir="/tmp") as director
         host.until(lambda: b"RIGHT_MOUSE" in host.text() and b"LEFT_MOUSE" in host.text())
         host.until(lambda: b"i=42;OK" in contents(left_log) and b"i=42;OK" in contents(right_log))
         host.until(lambda: b"a=t,f=24,s=1,v=1,i=1" in host.data and b"a=t,f=24,s=1,v=1,i=2" in host.data)
-        host.until(lambda: b"\x1b[1;1H\x1b_Ga=p,i=1" in host.data and b"\x1b[1;25H\x1b_Ga=p,i=2" in host.data)
+        host.until(lambda: b"\x1b[2;2H\x1b_Ga=p,i=1" in host.data and b"\x1b[2;25H\x1b_Ga=p,i=2" in host.data)
         # A drag begun in the main window stays there across the wall.
         os.write(host.master, b"\x1b[<0;30;4M\x1b[<32;1;4M\x1b[<0;1;4m")
-        expected = b"\x1b[<0;6;4M\x1b[<32;1;4M\x1b[<0;1;4m"
+        expected = b"\x1b[<0;6;3M\x1b[<32;1;3M\x1b[<0;1;3m"
         host.until(lambda: expected in contents(right_log))
         assert b"\x1b[<" not in contents(left_log)
         # A bracketed paste contains literal compositor shortcut bytes.
@@ -93,7 +93,7 @@ with tempfile.TemporaryDirectory(prefix="tmuxpp-input-", dir="/tmp") as director
         host.until(lambda: paste in contents(right_log))
         assert paste not in contents(left_log)
         os.write(host.master, b"\x1b[<0;2;4M\x1b[<0;2;4m")
-        host.until(lambda: b"\x1b[<0;2;4M\x1b[<0;2;4m" in contents(left_log))
+        host.until(lambda: b"\x1b[<0;1;3M\x1b[<0;1;3m" in contents(left_log))
         host.process.terminate()
         host.finish(128 + signal.SIGTERM)
     finally:
@@ -128,3 +128,13 @@ try:
 finally:
     host.close()
 print("Focus reports stay enabled; typing updates changed rows without clearing either shell.")
+
+for shutdown_signal in (signal.SIGHUP, signal.SIGINT):
+    host = Host("printf 'SIGNALREADY\\n'; read value")
+    try:
+        host.until(lambda: b'SIGNALREADY' in host.text())
+        host.process.send_signal(shutdown_signal)
+        host.finish(128 + shutdown_signal)
+    finally:
+        host.close()
+print('SIGHUP and SIGINT restore tty modes and exit with signal status.')

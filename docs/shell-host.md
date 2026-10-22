@@ -16,9 +16,11 @@ supplies the main shell command for automated checks; `TMUXPP_SIDEBAR_COMMAND`
 supplies the dock command. Without these variables, each runs an interactive shell.
 
 The window model remains terminal-independent. `src/shell.zig` connects it to
-the terminal adapter and renderer. `src/host.c` is a small POSIX bridge for
-forkpty, tty modes, poll, signals, and child cleanup. It contains no layout or
-terminal-emulation logic. Native Windows hosting remains future work.
+the terminal adapter and renderer. `src/host.zig` handles POSIX PTYs, tty modes, polling, signals, and child cleanup.
+It uses standard-library platform definitions and calls libc directly for OS
+services; the compositor/host interface uses ordinary Zig functions and slices.
+There is no project-owned C host source or header translation step. It contains
+no layout or terminal-emulation logic. Native Windows hosting remains future work.
 
 ## Display and input
 
@@ -34,12 +36,13 @@ retain it across another draw. Visibility regions are cached until the scene
 revision changes. Buffers grow when needed and are released with the renderer. Unchanged surfaces
 are skipped; full clearing is reserved for layout changes. The cursor is restored
 to the focused surface after painting. The host owns outer input modes and keeps
-focus reporting enabled across frames to avoid focus-event feedback loops. The cursor identifies focus; borders and window labels are pending.
+focus reporting enabled across frames to avoid focus-event feedback loops. Focused borders are cyan; inactive borders are gray. Draggable edges brighten
+on hover. Window labels remain pending.
 
 `src/input.zig` incrementally frames outer CSI sequences, SGR mouse reports,
 focus reports, and bracketed paste. A 50 ms timeout forwards a standalone Escape
 even if another shell continuously emits output. The compositor always requests
-SGR mouse and bracketed-paste reports. Clicks focus windows; captured drags and
+SGR mouse motion and bracketed-paste reports so borders can react to hover. Clicks focus windows; captured drags and
 releases remain with their starting window. Mouse positions become local to
 that window, clamped at its edges during capture. Mouse events reach only children
 that requested them, with SGR or legacy encoding according to the child's mode.
@@ -59,8 +62,8 @@ SIGINT. The shell's exit status is returned. SIGKILL cannot run cleanup.
 ## Kitty graphics boundary
 
 Decoded RGB and RGBA pixels, including PNG input decoded by the adapter, are
-uploaded with compositor-owned image IDs. The two renderers allocate disjoint
-odd/even IDs, so identical image IDs in the child applications cannot collide.
+uploaded with compositor-owned image IDs. Each renderer allocates a disjoint
+sequence of image IDs, so identical IDs in child applications cannot collide.
 The renderer emits its own placements
 and never forwards raw application APC graphics commands. Unchanged image data
 and placements stay unchanged during text-only redraws. Changed/deleted images invalidate uploads;
@@ -74,8 +77,47 @@ and partial-image clipping are not implemented yet. This is not complete Kitty
 protocol conformance. The outer terminal must support Kitty graphics; capability
 probing and non-Kitty fallback are still pending.
 
-The host currently has two fixed shell slots. It does not yet provide interactive
-floats, dragging, controller sidebars, or reconnectable attachment.
+The default host has two shells. Set `TMUXPP_FLOAT=1` to start a third shell in
+an opaque floating rectangle, initially centered in the main area. For example:
+
+```sh
+TMUXPP_FLOAT=1 ./zig-out/bin/tmuxpp-shell
+```
+
+Click the float to focus it; Ctrl-] then Tab cycles visible shells. Ctrl-] then
+`f` hides or shows the float without restarting it, returning focus to the
+previous shell when possible. Option-left-drag inside the float moves it.
+Drag any floating border with a normal click to resize that edge only, keeping
+its opposite edge fixed. Corners resize both adjoining edges and hold the
+opposite corner fixed. A corner handle extends two columns along the horizontal
+border and one row along the vertical border; it does not cover application
+content. Hover replaces the corner glyph with a diagonal arrow (↖ ↗ ↙ ↘).
+The sidebar and main shell share one draggable divider that changes their widths
+together without changing keyboard focus. Its color reflects focus in either
+adjacent terminal. Hovering
+a draggable edge brightens that edge within its active/inactive color scheme.
+Control-Option-left-drag inside a float resizes its bottom-right corner;
+Option-right-drag is also available. Shift-Option is not a compositor gesture,
+since the outer terminal uses it for rectangular selection. On macOS, Alt is
+Option. The outer terminal must forward modified mouse
+events. These gestures are consumed by the compositor; ordinary mouse events
+still go to the child. `TMUXPP_FLOAT_COMMAND` optionally supplies its command.
+`TMUXPP_SINGLE` takes precedence over the floating-shell option.
+
+The dock acts as a wall. Floats stay inside the remaining usable rectangle.
+Moving does not resize the child or send SIGWINCH; changing its size does.
+Layout changes repaint exposed content, and an obscured background cursor stays
+hidden. Terminals have one-cell box borders; the main shell uses the sidebar divider as
+its left border. PTY dimensions exclude decorations, and input coordinates are
+relative to the content area. Borders receive no application input. Tiny windows
+under three rows or columns omit borders to preserve usable content. Closing the float
+restores the same underlying shells. If only the floating shell remains, it
+becomes a visible full-root tile. The final exit status still comes from the main
+shell. Controller sidebars and reconnectable attachment remain pending.
+
+Partially covered Kitty images are currently suppressed in full and restored
+when fully visible again. Pixel-accurate partial-image clipping remains pending;
+this first floating-shell experiment does not complete graphics composition.
 
 ## Checks
 
@@ -104,3 +146,10 @@ file. Timing is reported rather than asserted because host speeds differ.
 A counting-allocator regression checks that warmed, fixed-size text updates
 perform no allocations or frees, including an explicit repaint. Screen growth,
 new styles or images, and layout changes may still require allocations.
+
+`tests/floating_host.py` checks floating-shell focus, intercepted drag gestures,
+PTY resizing, movement without SIGWINCH, wall constraints, hide/reveal, and close.
+Renderer tests round-trip occlusion and restoration of text and image placements.
+
+`tests/borders_host.py` checks hover highlighting, each anchored float edge,
+interception of border gestures, and the shared sidebar/main resize divider.

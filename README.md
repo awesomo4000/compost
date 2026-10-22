@@ -60,8 +60,10 @@ Use `-Doptimize=small` for the smaller build. `zig build` also installs
 `terminal-demo` and `layout-demo` under `zig-out/bin/`.
 
 The left dock is up to 24 columns wide and shrinks on narrow displays. This host
-is tested on macOS. Interactive floating windows, dragging, detach/reattach, and
-complete Kitty graphics rendering are not implemented. See
+is tested on macOS. An optional floating shell is available with `TMUXPP_FLOAT=1`; Alt-left-drag
+moves it, dragging a border resizes that edge, and Ctrl-] then `f` hides or shows it.
+Borders brighten on hover; the dock and main terminal share one draggable divider.
+Detach/reattach and complete Kitty graphics rendering are not implemented. See
 [shell host notes](docs/shell-host.md) for the exact supported behavior.
 
 `demo-vt` replays terminal output, shows the retained text screen, and confirms
@@ -141,3 +143,10 @@ terminal and the rest of the upstream suite remain to be done.
 A clean image-enabled rebuild also passed four Kitty input/decode/placement/
 lifecycle regressions. This does not establish complete Kitty support; the
 native Kitty output backend is still a stub. See [the audit](docs/kitty-graphics.md).
+
+## Distribution goals
+
+Keep SIMD enabled. Target fully static musl builds for broad Linux compatibility,
+Windows builds needing only built-in system DLLs with no runtime installer, and
+macOS builds using the built-in libSystem. See the [distribution policy](docs/roadmap.md#distribution-policy)
+for baseline and release-validation requirements.

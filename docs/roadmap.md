@@ -2,6 +2,10 @@
 
 ## Near term
 
+Develop and validate on macOS first. Linux and Windows release work is deferred
+until the compositor functionality is further along; the distribution policy
+below remains the eventual target.
+
 - Build a standalone Zig compositor with a terminal-independent geometry and
   window-management library. Test the core without tmux or terminal I/O.
 - Start with a shell filling the root rectangle, then add docked walls, tiling,
@@ -35,3 +39,26 @@ research remains in [sidebar design](sidebar-design.md) and
 
 These are recorded tasks, not implemented features or promises about current
 upstream Windows or Zig compatibility.
+
+## Distribution policy
+
+Keep libghostty-vt SIMD acceleration enabled. Prefer self-contained releases;
+removing libc itself is not a goal when it can be bundled statically.
+
+- Linux: ship fully static musl executables per CPU architecture, including
+  required dependency code. Aim for broad compatibility across distributions
+  and older kernels without depending on the installed glibc or shared libraries.
+  Choose and document a minimum kernel and CPU baseline, avoid native-CPU-only
+  release builds, and use runtime SIMD dispatch where supported. Validate on
+  older supported kernels as well as current distributions; static linking
+  alone does not guarantee compatibility with every historical Linux version.
+- Windows: depend only on the minimum necessary built-in system DLLs. Bundle
+  runtime and third-party library code statically so users need no additional
+  DLL downloads or runtime installers. Document the minimum Windows version
+  required by ConPTY and other APIs, and test native releases on that baseline.
+- macOS: linking the built-in libSystem is acceptable. Avoid separately installed
+  third-party dynamic libraries and document the minimum supported macOS version.
+
+Release checks must inspect actual executable dependencies and run on clean
+systems. Cross-compilation alone is not proof of runtime compatibility. These
+are release goals; the current builds have not established the full support matrix.

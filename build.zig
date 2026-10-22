@@ -55,7 +55,6 @@ pub fn build(b: *std.Build) void {
             .imports = &.{ .{ .name = "terminal", .module = terminal }, .{ .name = "compositor", .module = core }, .{ .name = "ghostty-vt", .module = vt } },
         }),
     });
-    shell.root_module.addCSourceFile(.{ .file = b.path("src/host.c"), .flags = &.{ "-std=c11", "-D_DEFAULT_SOURCE", "-Wall", "-Wextra" } });
     if (target.result.os.tag == .linux) shell.root_module.linkSystemLibrary("util", .{});
     b.installArtifact(shell);
     b.installArtifact(terminal_demo);

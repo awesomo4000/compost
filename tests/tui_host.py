@@ -21,9 +21,9 @@ for frame in range(40):
 host = Host('read start; exec python3 -c ' + shlex.quote(child))
 try:
     host.until(lambda: b'\x1b[?1004h' in host.data)
-    host.resize(50, 160)
+    host.resize(52, 162)
     host.process.send_signal(signal.SIGWINCH)
-    host.until(lambda: b'\x1b[50;1H' in host.data)
+    host.until(lambda: b'\x1b[51;2H' in host.data)
     os.write(host.master, b'go\r')
     durations = []
     sizes = []

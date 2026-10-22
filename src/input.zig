@@ -1,7 +1,7 @@
 //! Incremental outer-terminal input framing, independent of PTYs and window policy.
 const std = @import("std");
 pub const Mouse = struct { button: u16, x: u16, y: u16, release: bool };
-pub const Event = union(enum) { bytes: []const u8, mouse: Mouse, toggle_focus, focus: bool };
+pub const Event = union(enum) { bytes: []const u8, mouse: Mouse, toggle_focus, toggle_float, focus: bool };
 pub const Sink = struct { context: *anyopaque, emit: *const fn (*anyopaque, Event) anyerror!void };
 pub const Decoder = struct {
     pending: [128]u8 = undefined,
@@ -52,6 +52,10 @@ pub const Decoder = struct {
                     try sink.emit(sink.context, .toggle_focus);
                     continue;
                 }
+                if (byte == 'f') {
+                    try sink.emit(sink.context, .toggle_float);
+                    continue;
+                }
                 try sink.emit(sink.context, .{ .bytes = "\x1d" });
                 if (byte == 0x1d) continue;
             }
@@ -97,7 +101,7 @@ test "fragmented mouse, focus shortcut, paste, and Escape framing" {
                 .bytes => |bytes| try self.bytes.appendSlice(std.testing.allocator, bytes),
                 .mouse => |mouse| self.mouse = mouse,
                 .toggle_focus => self.toggles += 1,
-                .focus => {},
+                .focus, .toggle_float => {},
             }
         }
     };
