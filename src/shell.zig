@@ -5,7 +5,34 @@ const input = @import("input.zig");
 const docking = @import("docking.zig");
 const decoration = @import("frame.zig");
 const Renderer = @import("renderer.zig").Renderer;
-pub const std_options: std.Options = .{ .log_level = .warn };
+pub const std_options: std.Options = .{ .log_level = .warn, .logFn = logDiagnostic };
+// Never let dependency diagnostics bypass composition onto the live terminal.
+// Fixed storage bounds memory use even when a child repeatedly probes a feature.
+var diagnostic_bytes: [16384]u8 = undefined;
+var diagnostic_len: usize = 0;
+var diagnostic_overflow = false;
+var defer_diagnostics = true;
+fn logDiagnostic(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
+    if (!defer_diagnostics or std.c.isatty(2) == 0) {
+        std.log.defaultLog(level, scope, format, args);
+        return;
+    }
+    const line = std.mem.print(diagnostic_bytes[diagnostic_len..], level.asText() ++ "(" ++ @tagName(scope) ++ "): " ++ format ++ "\n", args) catch {
+        diagnostic_overflow = true;
+        return;
+    };
+    diagnostic_len += line.len;
+}
+fn flushDiagnostics() void {
+    defer_diagnostics = false;
+    var remaining = diagnostic_bytes[0..diagnostic_len];
+    while (remaining.len != 0) {
+        const n = std.c.write(2, remaining.ptr, remaining.len);
+        if (n <= 0) break;
+        remaining = remaining[@intCast(n)..];
+    }
+    if (diagnostic_overflow) std.log.warn("additional terminal diagnostics omitted", .{});
+}
 const host = @import("host.zig");
 const Slot = struct { index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
@@ -13,7 +40,7 @@ var slots: [host.capacity]Slot = init: {
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true } };
     break :init result;
 };
-const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, started: bool = false };
+const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, split: ?usize = null, started: bool = false };
 var drag: ?Drag = null;
 var drag_original: ?core.Scene = null;
 var drag_dock_extent: ?i32 = null;
@@ -48,6 +75,7 @@ pub fn main(init: std.process.Init) !void {
         slot.renderer.deinit(allocator);
     };
     const status = host.run();
+    flushDiagnostics();
     if (failure) |err| return err;
     if (status != 0) std.process.exit(@intCast(@min(status, 255)));
 }
@@ -271,7 +299,10 @@ fn event(_: *anyopaque, value: input.Event) !void {
                         try scene.raise(active.id);
                     }
                     drag.?.started = true;
-                    if (active.edge == .divider) {
+                    if (active.split) |split| {
+                        const position = if (active.edge == .tile_vertical) active.bounds.right() + dx else active.bounds.bottom() + dy;
+                        try scene.resizeDivider(split, position);
+                    } else if (active.edge == .divider) {
                         const extent = std.math.clamp(active.bounds.w + dx, @min(3, scene.root.w), @max(3, scene.root.w - 3));
                         dock_extent = extent;
                         try scene.configure(active.id, .{ .kind = .{ .docked = .{ .edge = .left, .extent = extent } }, .always_on_top = true });
@@ -293,7 +324,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 const modified = mouse.button & 8 != 0 and mouse.button & 4 == 0 and (mouse.button & 3 == 0 or mouse.button & 3 == 2);
                 const border_edge = decoration.edgeAt(&scene, target, mouse.x, mouse.y);
                 const moving = modified and mouse.button & 3 == 0 and (on_border or mouse.button & 16 == 0);
-                if (border_edge != .divider or moving) try focus(target);
+                if ((border_edge != .divider and border_edge != .tile_vertical and border_edge != .tile_horizontal) or moving) try focus(target);
                 if (moving or (border_edge != null and mouse.button & 3 == 0) or
                     (window.options.kind == .floating and !on_border and modified))
                 {
@@ -301,7 +332,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                     drag_original = scene;
                     drag_dock_extent = dock_extent;
                     destination = null;
-                    drag = .{ .id = target, .x = mouse.x, .y = mouse.y, .bounds = window.bounds, .edge = action };
+                    drag = .{ .id = target, .x = mouse.x, .y = mouse.y, .bounds = window.bounds, .edge = action, .split = if (action == .tile_vertical) scene.dividerFor(target, .horizontal) else if (action == .tile_horizontal) scene.dividerFor(target, .vertical) else null };
                     try scene.capturePointer(target);
                     return;
                 }
@@ -362,19 +393,40 @@ fn draw() !void {
         changed = changed or slot.drawn_revision != s.revision;
     };
     if (!changed) return;
-    var render_scene = scene;
+    const render_scene = scene;
     var preview: ?core.Rect = null;
     if (destination) |drop| if (drag) |active| {
-        if (render_scene.next_id < std.math.maxInt(u64)) {
-            const rect = try drop.preview(&scene, active.id);
-            if (!rect.empty()) {
-                const overlay = render_scene.add(.{ .kind = .{ .floating = rect }, .always_on_top = true }) catch null;
-                if (overlay) |id| preview = render_scene.get(id).?.bounds;
-            }
-        }
+        const rect = try drop.preview(&scene, active.id);
+        if (!rect.empty()) preview = rect;
     };
     try display("\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[0m");
-    if (layout_dirty) try display("\x1b[2J");
+    if (layout_dirty) {
+        try display("\x1b[2J");
+        // Paint only unoccupied desktop cells. Windows render their own tinted
+        // retained content; borders and Kitty placements keep their normal form.
+        if (preview) |rect| {
+            if (border_output == null) border_output = .init(allocator);
+            const output = &border_output.?;
+            output.clearRetainingCapacity();
+            try output.writer.writeAll("\x1b[0;48;2;20;28;33m");
+            var y = rect.y;
+            while (y < rect.bottom()) : (y += 1) {
+                var x = rect.x;
+                while (x < rect.right()) {
+                    if (scene.hitTest(x, y) != null) {
+                        x += 1;
+                        continue;
+                    }
+                    const start = x;
+                    while (x < rect.right() and scene.hitTest(x, y) == null) : (x += 1) {}
+                    try output.writer.print("\x1b[{d};{d}H", .{ y + 1, start + 1 });
+                    try output.writer.splatByteAll(' ', @intCast(x - start));
+                }
+            }
+            try output.writer.writeAll("\x1b[0m");
+            try display(output.written());
+        }
+    }
     for (&slots) |*slot| if (slot.surface) |s| {
         if (layout_dirty) {
             slot.renderer.invalidate(allocator);
@@ -382,6 +434,7 @@ fn draw() !void {
             slot.renderer.region_scene = null;
         }
         if (!layout_dirty and slot.drawn_revision == s.revision) continue;
+        slot.renderer.tint = if (preview) |rect| .{ .bounds = rect } else null;
         const frame = try slot.renderer.draw(allocator, &render_scene, slot.id, s);
         try display(frame);
         slot.drawn_revision = s.revision;
@@ -391,15 +444,6 @@ fn draw() !void {
         const output = &border_output.?;
         output.clearRetainingCapacity();
         for (&slots) |*slot| if (slot.surface != null) try decoration.draw(&output.writer, &render_scene, slot.id, if (hover_id == slot.id) hover_edge else null);
-        if (preview) |rect| {
-            try output.writer.writeAll("\x1b[0;44m");
-            var y = rect.y;
-            while (y < rect.bottom()) : (y += 1) {
-                try output.writer.print("\x1b[{d};{d}H", .{ y + 1, rect.x + 1 });
-                try output.writer.splatByteAll(' ', @intCast(rect.w));
-            }
-            try output.writer.writeAll("\x1b[0m");
-        }
         if (!hasShells()) {
             const label = "tmux++";
             const hint = "Ctrl-] Enter: shell   Ctrl-] q: quit";

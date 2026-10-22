@@ -4,8 +4,30 @@ const core = @import("compositor");
 const decoration = @import("frame.zig");
 const terminal = @import("terminal");
 
+pub const Tint = struct {
+    bounds: core.Rect,
+    color: vt.color.RGB = .{ .r = 80, .g = 110, .b = 130 },
+    alpha: u8 = 64,
+};
+fn blend(base: vt.color.RGB, tint: Tint) vt.color.RGB {
+    var result: vt.color.RGB = undefined;
+    inline for (.{ "r", "g", "b" }) |channel| {
+        @field(result, channel) = @intCast((@as(u32, @field(base, channel)) * (255 - @as(u32, tint.alpha)) + @as(u32, @field(tint.color, channel)) * tint.alpha + 127) / 255);
+    }
+    return result;
+}
+fn resolveColor(value: vt.Style.Color, fallback: vt.color.RGB, palette: vt.color.Palette) vt.color.RGB {
+    return switch (value) {
+        .none => fallback,
+        .rgb => |rgb| rgb,
+        .palette => |index| palette[index],
+    };
+}
+
 /// Row-diff renderer. Owns outer image IDs, never forwards APC bytes.
 pub const Renderer = struct {
+    tint: ?Tint = null,
+    previous_tint: ?Tint = null,
     state: vt.RenderState = .empty,
     images: std.AutoHashMapUnmanaged(u32, u32) = .{},
     generation: u64 = 0,
@@ -45,6 +67,7 @@ pub const Renderer = struct {
     /// Borrowed frame, valid until the next draw or deinit. Use the same allocator throughout.
     pub fn draw(self: *Renderer, allocator: std.mem.Allocator, scene: *const core.Scene, id: core.Id, surface: *terminal.Surface) ![]const u8 {
         try self.state.update(allocator, &surface.terminal);
+        if (!std.meta.eql(self.tint, self.previous_tint)) self.row_ids.clearRetainingCapacity();
         if (self.region_scene != scene.revision or self.region_id != id) {
             var region = try scene.visibleRegion(allocator, id);
             if (self.bordered) {
@@ -102,9 +125,18 @@ pub const Renderer = struct {
                     .bg_color_rgb => style.bg_color = .{ .rgb = .{ .r = raw.content.color_rgb.r, .g = raw.content.color_rgb.g, .b = raw.content.color_rgb.b } },
                     else => {},
                 }
+                if (self.tint) |tint| if (tint.bounds.contains(px, py) or (width == 2 and tint.bounds.contains(px + 1, py))) {
+                    // Resolve palette/default colors before blending. Preserve glyphs,
+                    // inverse video and all other attributes in the retained screen.
+                    const bg = self.state.colors.background;
+                    const fg = self.state.colors.foreground;
+                    style.bg_color = .{ .rgb = blend(resolveColor(style.bg_color, bg, self.state.colors.palette), tint) };
+                    style.fg_color = .{ .rgb = blend(resolveColor(style.fg_color, fg, self.state.colors.palette), tint) };
+                    if (style.underline_color != .none) style.underline_color = .{ .rgb = blend(resolveColor(style.underline_color, fg, self.state.colors.palette), tint) };
+                };
                 if (previous_style == null or !previous_style.?.eql(style)) {
                     try row_writer.writeAll("\x1b[0m");
-                    try colors(row_writer, style, raw);
+                    try colors(row_writer, style, null);
                     previous_style = style;
                 }
                 next_x = px + @as(i32, @intCast(width));
@@ -135,6 +167,7 @@ pub const Renderer = struct {
         }
         self.state.dirty = .false;
         self.text_scene = scene.revision;
+        self.previous_tint = self.tint;
         try w.writeAll("\x1b[0m");
         const storage = &surface.terminal.screens.active.kitty_images;
         if (self.image_dirty != storage.dirty or self.generation != storage.generation or self.image_scene != scene.revision) {
@@ -173,13 +206,15 @@ pub const Renderer = struct {
             .rgb => |rgb| try w.print("\x1b[{d};2;{d};{d};{d}m", .{ which, rgb.r, rgb.g, rgb.b }),
         }
     }
-    fn colors(w: *std.Io.Writer, style: vt.Style, raw: vt.Cell) !void {
+    fn colors(w: *std.Io.Writer, style: vt.Style, raw: ?vt.Cell) !void {
         try color(w, style.fg_color, 38);
-        switch (raw.content_tag) {
-            .bg_color_palette => try color(w, .{ .palette = raw.content.color_palette.data }, 48),
-            .bg_color_rgb => try color(w, .{ .rgb = .{ .r = raw.content.color_rgb.r, .g = raw.content.color_rgb.g, .b = raw.content.color_rgb.b } }, 48),
-            else => try color(w, style.bg_color, 48),
-        }
+        var background = style.bg_color;
+        if (raw) |cell| switch (cell.content_tag) {
+            .bg_color_palette => background = .{ .palette = cell.content.color_palette.data },
+            .bg_color_rgb => background = .{ .rgb = .{ .r = cell.content.color_rgb.r, .g = cell.content.color_rgb.g, .b = cell.content.color_rgb.b } },
+            else => {},
+        };
+        try color(w, background, 48);
         try color(w, style.underline_color, 58);
         inline for (.{ .{ "bold", 1 }, .{ "faint", 2 }, .{ "italic", 3 }, .{ "blink", 5 }, .{ "inverse", 7 }, .{ "invisible", 8 }, .{ "strikethrough", 9 } }) |flag| {
             if (@field(style.flags, flag[0])) try w.print("\x1b[{d}m", .{flag[1]});
@@ -335,6 +370,14 @@ test "outer Kitty image IDs are independent and uploads survive text-only redraw
     try std.testing.expect(std.mem.indexOf(u8, next, "a=d") == null);
     try destination.feed(next);
     try std.testing.expectEqual(@as(u32, 1), destination.terminal.screens.active.kitty_images.placements.count());
+    renderer.tint = .{ .bounds = try core.Rect.init(0, 0, 12, 6) };
+    const tinted = try renderer.draw(alloc, &scene, id, source);
+    try std.testing.expect(std.mem.indexOf(u8, tinted, "\x1b_G") == null);
+    try destination.feed(tinted);
+    try std.testing.expectEqual(@as(u32, 1), destination.terminal.screens.active.kitty_images.placements.count());
+    try std.testing.expectEqualSlices(u8, &.{ 255, 0, 0 }, destination.terminal.screens.active.kitty_images.imageById(1).?.data.complete);
+    renderer.tint = null;
+    try destination.feed(try renderer.draw(alloc, &scene, id, source));
     try source.feed("\x1b_Ga=d,d=I,i=42;\x1b\\");
     const deleted = try renderer.draw(alloc, &scene, id, source);
     try destination.feed(deleted);
@@ -493,4 +536,47 @@ test "border cells remain separate from terminal content" {
     defer alloc.free(text);
     try std.testing.expectEqualStrings("┌────┐\n│abcd│\n│efgh│\n└────┘", text);
     try std.testing.expectEqual(try core.Rect.init(0, 0, 2, 2), decoration.content(try core.Rect.init(0, 0, 2, 2)));
+}
+
+test "preview tint preserves Unicode and styles and restores unchanged cells" {
+    const alloc = std.testing.allocator;
+    var context: u8 = 0;
+    const size: terminal.Size = .{ .columns = 24, .rows = 4, .cell_width = 8, .cell_height = 16 };
+    const source = try terminal.Surface.create(std.testing.io, alloc, size, .{ .context = &context, .write = discard });
+    defer source.destroy();
+    const destination = try terminal.Surface.create(std.testing.io, alloc, size, .{ .context = &context, .write = discard });
+    defer destination.destroy();
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 24, 4));
+    const id = try scene.add(.{ .kind = .tiled });
+    var renderer: Renderer = .{ .framed = false };
+    defer renderer.deinit(alloc);
+    try source.feed("\x1b[1;38;2;200;100;50;48;2;40;60;80mA世界 e\xcc\x81\x1b[7mI\x1b[0m\r\n\x1b[44m\x1b[2Kpalette\x1b[0m");
+    try destination.feed(try renderer.draw(alloc, &scene, id, source));
+    const before = try destination.plainText(alloc);
+    defer alloc.free(before);
+    renderer.tint = .{ .bounds = try core.Rect.init(0, 0, 12, 4) };
+    try destination.feed(try renderer.draw(alloc, &scene, id, source));
+    const tinted = try destination.plainText(alloc);
+    defer alloc.free(tinted);
+    try std.testing.expectEqualStrings(before, tinted);
+    var state: vt.RenderState = .empty;
+    defer state.deinit(alloc);
+    try state.update(alloc, &destination.terminal);
+    const style = state.row_data.items(.cells)[state.rowDataRange().start].items(.style)[0];
+    try std.testing.expect(style.flags.bold);
+    try std.testing.expectEqual(vt.color.RGB{ .r = 50, .g = 73, .b = 93 }, style.bg_color.rgb);
+    try std.testing.expect(state.row_data.items(.cells)[state.rowDataRange().start].items(.style)[7].flags.inverse);
+    renderer.tint.?.bounds.x = 12;
+    try destination.feed(try renderer.draw(alloc, &scene, id, source));
+    try state.update(alloc, &destination.terminal);
+    try std.testing.expectEqual(vt.color.RGB{ .r = 40, .g = 60, .b = 80 }, state.row_data.items(.cells)[state.rowDataRange().start].items(.style)[0].bg_color.rgb);
+    // A preview must not mutate the source; removing it repaints even with no PTY output.
+    renderer.tint = null;
+    try destination.feed(try renderer.draw(alloc, &scene, id, source));
+    try state.update(alloc, &destination.terminal);
+    const restored = state.row_data.items(.cells)[state.rowDataRange().start].items(.style)[0];
+    try std.testing.expectEqual(vt.color.RGB{ .r = 40, .g = 60, .b = 80 }, restored.bg_color.rgb);
+    const after = try destination.plainText(alloc);
+    defer alloc.free(after);
+    try std.testing.expectEqualStrings(before, after);
 }

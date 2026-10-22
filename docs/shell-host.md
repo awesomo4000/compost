@@ -6,15 +6,17 @@ returns to the desktop; Ctrl-] q closes all children and quits.
 
 Option-left-drag moves a float. Option-dragging a tiled or wall border pulls it
 out after a small movement threshold, restoring its remembered floating size.
-Drag near a workspace edge to split the whole tiled area, or near a tile edge
-to split that tile. A blue rectangle previews the destination. Release commits;
+Drag near a workspace edge to split the whole tiled area. Over an existing
+tile, broad left/right/top/bottom zones split that tile; the central 40% in both
+dimensions leaves the window floating. The outer workspace band takes priority. A muted gray-blue rectangle previews the destination. The first edge drop
+occupies that half of the desktop; adding another tile fills the tiled area. Release commits;
 Escape restores the original layout. Each split starts at 50/50. Hold Control
 during the move to create a wall at a workspace edge instead. Walls reserve one
 third of the available dimension. Existing shells retain their PTYs and IDs.
-The preview does not resize neighbors until release. General tiled-divider and
-four-sided wall resizing remain future work; float edges/corners and the legacy
-left sidebar divider support dragging today. At the 32-window limit there is no
-spare scene slot for the preview overlay.
+The preview does not resize neighbors until release. Tiles share one border. Drag a shared vertical or horizontal divider to resize
+both sides without changing focus. Nested splits resize within their parent;
+Escape cancels. Float edges/corners and the legacy left sidebar divider also
+support dragging. Four-sided wall resizing remains future work. The preview consumes no window slot.
 
 Click or Ctrl-] Tab focuses a window. Ctrl-] twice sends a literal Ctrl-].
 The user's tmux prefix passes through. Ctrl-] f toggles a floating window.
@@ -167,3 +169,19 @@ Renderer tests round-trip occlusion and restoration of text and image placements
 
 `tests/borders_host.py` checks hover highlighting, each anchored float edge,
 interception of border gestures, and the shared sidebar/main resize divider.
+
+## Diagnostics
+
+Library warnings do not write onto the live composed display. When stderr is a
+terminal, the host buffers up to 16 KiB and prints diagnostics after restoring
+the terminal on exit. Extra diagnostics are dropped with a notice. Redirect
+stderr for immediate logging: `./zig-out/bin/tmuxpp-shell 2>/tmp/tmuxpp.log`.
+This isolates diagnostics; it does not add support for unimplemented protocols.
+
+Drop previews blend a 25% gray-blue tint into retained cell foreground and
+background colors, preserving text, Unicode graphemes, and style attributes.
+Moving or cancelling restores the original colors without requiring child output.
+Palette colors use the embedded VT palette. Until outer-terminal default colors
+are queried, defaults use the embedded VT colors, initially black and white.
+Borders retain focus colors. Kitty images remain visible and untinted; image
+alpha composition and general translucent windows remain future work.

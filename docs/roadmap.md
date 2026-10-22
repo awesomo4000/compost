@@ -12,6 +12,8 @@ below remains the eventual target.
   and constrained floating windows. Separate stacking from space reservation.
 - Use libghostty-vt terminal adapters and design Kitty graphics rendering,
   clipping, and restoration into the initial terminal integration.
+- Extend the implemented text-cell preview tint to Kitty image blending and
+  general translucent windows. Query outer-terminal default colors for theme matching.
 - Keep the host alive through display disconnects and restore drawing and input
   on reattach. Evaluate dtach as an initial transport.
 - Host multiple tmux clients with targeted sidebar controllers and an optional

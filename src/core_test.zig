@@ -202,3 +202,23 @@ test "docking existing windows splits only the target and preserves identities" 
     try scene.placeTile(c, a, .right);
     try equal(rect(60, 0, 20, 24), scene.get(c).?.bounds);
 }
+
+test "divider resizing adjusts a nested split while preserving its sibling" {
+    var scene = try Scene.init(rect(0, 0, 90, 30));
+    const a = try scene.add(.{ .kind = .tiled });
+    const b = try scene.splitTile(a, .horizontal, 5000, .{ .kind = .tiled });
+    const c = try scene.splitTile(b, .vertical, 5000, .{ .kind = .tiled });
+    const vertical = scene.dividerFor(a, .horizontal).?;
+    try scene.resizeDivider(vertical, 30);
+    try equal(rect(0, 0, 30, 30), scene.get(a).?.bounds);
+    try equal(rect(30, 0, 60, 15), scene.get(b).?.bounds);
+    const horizontal = scene.dividerFor(b, .vertical).?;
+    try scene.resizeDivider(horizontal, 10);
+    try equal(rect(30, 0, 60, 10), scene.get(b).?.bounds);
+    try equal(rect(30, 10, 60, 20), scene.get(c).?.bounds);
+    try equal(rect(0, 0, 30, 30), scene.get(a).?.bounds);
+    try scene.resizeDivider(horizontal, -200);
+    try equal(@as(i32, 3), scene.get(b).?.bounds.h);
+    try scene.resizeDivider(horizontal, 200);
+    try equal(@as(i32, 3), scene.get(c).?.bounds.h);
+}

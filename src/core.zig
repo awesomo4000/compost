@@ -34,6 +34,8 @@ pub const Scene = struct {
     windows: [capacity]?Window = @splat(null),
     nodes: [capacity * 2 - 1]?Node = @splat(null),
     tree: ?usize = null,
+    // First edge drop leaves the opposite half empty until another tile joins.
+    first_tile_edge: ?Edge = null,
     focus: ?Id = null,
     capture: ?Id = null,
     next_id: Id = 1,
@@ -158,6 +160,7 @@ pub const Scene = struct {
             const index = next.freeNode();
             next.nodes[index] = .{ .leaf = id };
             next.tree = index;
+            next.first_tile_edge = edge;
         }
         next.layout();
         self.* = next;
@@ -180,6 +183,54 @@ pub const Scene = struct {
                 return index;
             },
         }
+    }
+    fn nodeBounds(self: *const Scene, index: usize) Rect {
+        return switch (self.nodes[index].?) {
+            .leaf => |id| self.get(id).?.bounds,
+            .split => |split| blk: {
+                const a = self.nodeBounds(split.first);
+                const b = self.nodeBounds(split.second);
+                const x = @min(a.x, b.x);
+                const y = @min(a.y, b.y);
+                break :blk .{ .x = x, .y = y, .w = @max(a.right(), b.right()) - x, .h = @max(a.bottom(), b.bottom()) - y };
+            },
+        };
+    }
+    /// Identify the split touching the right/bottom edge of a visible tile.
+    pub fn dividerFor(self: *const Scene, id: Id, axis: Axis) ?usize {
+        const tile = self.get(id) orelse return null;
+        if (tile.options.kind != .tiled or !tile.visible) return null;
+        for (self.nodes, 0..) |maybe, index| if (maybe) |node| {
+            if (node != .split or node.split.axis != axis or !self.tileVisible(node.split.first) or !self.tileVisible(node.split.second)) continue;
+            const first = self.nodeBounds(node.split.first);
+            const r = tile.bounds;
+            if (axis == .horizontal) {
+                if (first.right() == r.right() and r.y >= first.y and r.bottom() <= first.bottom()) return index;
+            } else if (first.bottom() == r.bottom() and r.x >= first.x and r.right() <= first.right()) return index;
+        };
+        return null;
+    }
+    fn minimumSpan(self: *const Scene, index: usize, axis: Axis) i32 {
+        return switch (self.nodes[index].?) {
+            .leaf => 3,
+            .split => |s| if (s.axis == axis) self.minimumSpan(s.first, axis) + self.minimumSpan(s.second, axis) else @max(self.minimumSpan(s.first, axis), self.minimumSpan(s.second, axis)),
+        };
+    }
+    pub fn resizeDivider(self: *Scene, index: usize, position: i32) !void {
+        if (index >= self.nodes.len) return error.InvalidSplit;
+        const node = self.nodes[index] orelse return error.InvalidSplit;
+        if (node != .split) return error.InvalidSplit;
+        const split = node.split;
+        const bounds = self.nodeBounds(index);
+        const span = if (split.axis == .horizontal) bounds.w else bounds.h;
+        if (span < 6) return;
+        const start = if (split.axis == .horizontal) bounds.x else bounds.y;
+        const min_first = self.minimumSpan(split.first, split.axis);
+        const min_second = self.minimumSpan(split.second, split.axis);
+        if (span < min_first + min_second) return;
+        const extent = std.math.clamp(position - start, min_first, span - min_second);
+        self.nodes[index].?.split.ratio = @intCast(@divTrunc(@as(i64, extent) * 10000 + span - 1, span));
+        self.layout();
     }
     pub fn remove(self: *Scene, id: Id) !void {
         _ = try self.window(id);
@@ -330,7 +381,27 @@ pub const Scene = struct {
             w.bounds = r;
         }
         self.usable = available;
-        if (self.tree) |root| self.layoutTiles(root, available);
+        if (self.tree) |root| {
+            var tile_area = available;
+            if (self.nodes[root].? == .split) self.first_tile_edge = null;
+            if (self.first_tile_edge) |edge| {
+                switch (edge) {
+                    .left => tile_area.w = @divTrunc(available.w, 2),
+                    .right => {
+                        const half = @divTrunc(available.w, 2);
+                        tile_area.x += half;
+                        tile_area.w -= half;
+                    },
+                    .top => tile_area.h = @divTrunc(available.h, 2),
+                    .bottom => {
+                        const half = @divTrunc(available.h, 2);
+                        tile_area.y += half;
+                        tile_area.h -= half;
+                    },
+                }
+            }
+            self.layoutTiles(root, tile_area);
+        } else self.first_tile_edge = null;
         for (&self.windows) |*maybe| if (maybe.*) |*w| {
             if (w.options.kind == .floating) w.bounds = w.options.kind.floating.constrained(available);
             w.constraints_unmet = w.bounds.w < w.options.min_width or w.bounds.h < w.options.min_height;

@@ -44,10 +44,12 @@ sends a literal Ctrl-] to the shell. Ordinary keys, including your tmux prefix,
 pass through to the focused shell.
 
 - Option-left-drag moves a window. On a tiled border it pulls the tile out.
-- Drag near a workspace edge or a tile edge to see a blue docking preview.
+- Drag over the directional zones of a tile to split it, or near a workspace
+  edge to split the whole layout. A muted gray-blue preview shows the target.
   Release to dock; Escape cancels the drag. New splits divide the target equally.
 - Hold Control during an Option-drag to a workspace edge to create a reserved wall.
-- Drag a floating border or corner to resize it.
+- Drag a shared tile divider to resize both sides; drag a floating border or
+  corner to resize that float.
 - `exit` closes a shell; closing the last returns to the desktop.
 - **Ctrl-] then q** quits the compositor and closes all its shells.
 

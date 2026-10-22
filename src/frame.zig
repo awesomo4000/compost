@@ -13,8 +13,18 @@ pub fn sharesLeft(scene: *const core.Scene, id: core.Id) bool {
     const window = scene.get(id).?;
     if (window.options.kind != .tiled) return false;
     for (scene.windows) |maybe| if (maybe) |other| {
-        if (other.visible and other.options.kind == .docked and other.options.kind.docked.edge == .left and
+        if (other.visible and (other.options.kind == .tiled or (other.options.kind == .docked and other.options.kind.docked.edge == .left)) and
+            other.bounds.y < window.bounds.bottom() and other.bounds.bottom() > window.bounds.y and
             other.bounds.right() == window.bounds.x and hasBorder(other.bounds)) return true;
+    };
+    return false;
+}
+pub fn sharesTop(scene: *const core.Scene, id: core.Id) bool {
+    const window = scene.get(id).?;
+    if (window.options.kind != .tiled) return false;
+    for (scene.windows) |maybe| if (maybe) |other| {
+        if (other.visible and other.options.kind == .tiled and hasBorder(other.bounds) and
+            other.bounds.bottom() == window.bounds.y and other.bounds.x < window.bounds.right() and other.bounds.right() > window.bounds.x) return true;
     };
     return false;
 }
@@ -25,14 +35,22 @@ pub fn contentFor(scene: *const core.Scene, id: core.Id) core.Rect {
         inner.x -= 1;
         inner.w += 1;
     }
+    if (hasBorder(outer) and sharesTop(scene, id)) {
+        inner.y -= 1;
+        inner.h += 1;
+    }
     return inner;
 }
-pub const Edge = enum { left, right, top, bottom, move, top_left, top_right, bottom_left, bottom_right, divider };
+pub const Edge = enum { left, right, top, bottom, move, top_left, top_right, bottom_left, bottom_right, divider, tile_vertical, tile_horizontal };
 pub fn edgeAt(scene: *const core.Scene, id: core.Id, x: i32, y: i32) ?Edge {
     const window = scene.get(id).?;
     const r = window.bounds;
     if (!hasBorder(r) or !r.contains(x, y) or contentFor(scene, id).contains(x, y)) return null;
     if (window.options.kind == .docked and window.options.kind.docked.edge == .left and x == r.right() - 1) return .divider;
+    if (window.options.kind == .tiled) {
+        if (x == r.right() - 1 and scene.dividerFor(id, .horizontal) != null) return .tile_vertical;
+        if (y == r.bottom() - 1 and scene.dividerFor(id, .vertical) != null) return .tile_horizontal;
+    }
     if (window.options.kind != .floating) return null;
     // Enlarge corner handles along the border without stealing application cells.
     const near_left = x - r.x <= 2 and x - r.x <= r.right() - 1 - x;
@@ -73,9 +91,34 @@ pub fn adjust(r: core.Rect, edge: Edge, dx: i32, dy: i32, area: core.Rect) core.
             next.x += dx;
             next.y += dy;
         },
-        .divider => {},
+        .divider, .tile_vertical, .tile_horizontal => {},
     }
     return next;
+}
+fn borderCell(scene: *const core.Scene, x: i32, y: i32) bool {
+    const id = scene.hitTest(x, y) orelse return false;
+    const window = scene.get(id).?;
+    return window.options.kind != .floating and hasBorder(window.bounds) and !contentFor(scene, id).contains(x, y);
+}
+fn joinedGlyph(scene: *const core.Scene, x: i32, y: i32) []const u8 {
+    const mask: u4 = @as(u4, @intFromBool(borderCell(scene, x - 1, y))) |
+        (@as(u4, @intFromBool(borderCell(scene, x + 1, y))) << 1) |
+        (@as(u4, @intFromBool(borderCell(scene, x, y - 1))) << 2) |
+        (@as(u4, @intFromBool(borderCell(scene, x, y + 1))) << 3);
+    return switch (mask) {
+        3, 1, 2 => "─",
+        12, 4, 8 => "│",
+        10 => "┌",
+        9 => "┐",
+        6 => "└",
+        5 => "┘",
+        11 => "┬",
+        7 => "┴",
+        14 => "├",
+        13 => "┤",
+        15 => "┼",
+        else => "·",
+    };
 }
 pub fn draw(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, hover: ?Edge) !void {
     const window = scene.get(id).?;
@@ -83,12 +126,13 @@ pub fn draw(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, hover: ?Ed
     if (!window.visible or !hasBorder(r)) return;
     var last_color: ?u8 = null;
     const shared_left = sharesLeft(scene, id);
+    const shared_top = sharesTop(scene, id);
     var y = r.y;
     while (y < r.bottom()) : (y += 1) {
         var x = r.x;
         var adjacent = false;
         while (x < r.right()) : (x += 1) {
-            const top = y == r.y;
+            const top = y == r.y and !shared_top;
             const bottom = y == r.bottom() - 1;
             const left = x == r.x and !shared_left;
             const right = x == r.right() - 1;
@@ -102,14 +146,20 @@ pub fn draw(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, hover: ?Ed
                 other.options.kind == .tiled and sharesLeft(scene, focused) and other.bounds.x == r.right()
             else
                 false else false;
-            const active = scene.focus == id or (divider and shared_active);
+            const tile_shared_active = if (scene.focus) |focused| if (scene.get(focused)) |other|
+                window.options.kind == .tiled and other.options.kind == .tiled and
+                    ((right and other.bounds.x == r.right() and y >= other.bounds.y and y < other.bounds.bottom()) or
+                        (bottom and other.bounds.y == r.bottom() and x >= other.bounds.x and x < other.bounds.right()))
+            else
+                false else false;
+            const active = scene.focus == id or (divider and shared_active) or tile_shared_active;
             const color: u8 = if (active) (if (highlighted) 96 else 36) else (if (highlighted) 37 else 90);
             if (last_color != color) {
                 try w.print("\x1b[0;{d}m", .{color});
                 last_color = color;
             }
             if (!adjacent) try w.print("\x1b[{d};{d}H", .{ y + 1, x + 1 });
-            const glyph: []const u8 = if (highlighted and top and left and hover == .top_left) "↖" else if (highlighted and top and right and hover == .top_right) "↗" else if (highlighted and bottom and left and hover == .bottom_left) "↙" else if (highlighted and bottom and right and hover == .bottom_right) "↘" else if (divider and top) "┬" else if (divider and bottom) "┴" else if (top and left) "┌" else if (top and right) "┐" else if (bottom and left) "└" else if (bottom and right) "┘" else if (top or bottom) "─" else "│";
+            const glyph: []const u8 = if (window.options.kind != .floating) joinedGlyph(scene, x, y) else if (highlighted and top and left and hover == .top_left) "↖" else if (highlighted and top and right and hover == .top_right) "↗" else if (highlighted and bottom and left and hover == .bottom_left) "↙" else if (highlighted and bottom and right and hover == .bottom_right) "↘" else if (divider and top) "┬" else if (divider and bottom) "┴" else if (top and left) "┌" else if (top and right) "┐" else if (bottom and left) "└" else if (bottom and right) "┘" else if (top or bottom) "─" else "│";
             try w.writeAll(glyph);
             adjacent = true;
         }

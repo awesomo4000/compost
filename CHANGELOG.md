@@ -2,6 +2,14 @@
 
 ## 10/22/2026
 
+- Replaced opaque drop previews with a 25% tint over retained cell colors. Preserved text, Unicode, styles, and original colors on movement/cancellation. Kitty images remain visible and untinted. Removed the extra preview window and added renderer restoration and image-retention tests.
+
+- Added broad directional drop zones within tiles, with workspace-edge priority and a central floating-placement area. Tiles now share borders with connected junctions; dragging a divider resizes both sides, preserves keyboard focus, and supports Escape cancellation.
+
+- Buffered dependency diagnostics while stderr is a terminal so unsupported VT probes cannot overwrite composed windows. Flush diagnostics after restoring the terminal; redirected stderr still receives logs immediately. Added a PTY regression covering the startup warnings and Kitty error-reply routing.
+
+- Fixed the first edge drop to occupy the selected half of the desktop instead of filling the screen. Replaced the saturated blue docking preview with a muted gray-blue shade.
+
 - Added an empty desktop, Ctrl-] Enter shell creation, Ctrl-] q shutdown, and reusable PTY slots. Added drag-to-tile previews, nested target splits, reserved wall drops, Option-drag undocking with remembered floating sizes, and Escape cancellation. Layout changes preserve running children. Kept the earlier layouts behind environment options and added geometry and desktop PTY regressions.
 
 - Added four corner resize handles with larger border hit areas and diagonal hover arrows; each resizes two edges while preserving the opposite corner. Fixed shared-divider dragging to preserve keyboard focus and use the active adjacent terminal border color.
