@@ -2,6 +2,8 @@
 
 ## 10/22/2026
 
+- Added the first persistent control-protocol slice: private per-instance Unix sockets, version negotiation, ping, bounded nonblocking multi-client I/O, child socket discovery, and normal-exit cleanup. Added protocol and real-PTY connection regressions. Window control remains the next development stage.
+
 - Added the default aurora border style with a pink/violet/teal RGB gradient, rounded floating corners, muted inactive windows, and brighter hover handles. Shared dividers follow adjacent focus. Retained the original style through `COMPO_BORDER_STYLE=plain`.
 
 - Renamed the compositor executable to `compo`; updated build output, documentation, and PTY tests.

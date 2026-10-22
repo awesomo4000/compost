@@ -161,3 +161,10 @@ Keep SIMD enabled. Target fully static musl builds for broad Linux compatibility
 Windows builds needing only built-in system DLLs with no runtime installer, and
 macOS builds using the built-in libSystem. See the [distribution policy](docs/roadmap.md#distribution-policy)
 for baseline and release-validation requirements.
+
+## Agent control protocol
+
+The initial persistent local socket supports version negotiation and ping. Child
+shells receive its path in `COMPO_SOCKET`. Window control is the next stage. See
+[the current interface](docs/control-protocol.md) and
+[the development spec](specs/00-control-proto.md).

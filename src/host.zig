@@ -2,6 +2,8 @@
 const std = @import("std");
 const c = std.c;
 const app = @import("root");
+const control = @import("control.zig");
+var control_server: ?control.Server = null;
 // Darwin sys/ttycom.h: _IOW('t', 103, struct winsize).
 // std.c currently exposes only TIOCGWINSZ on Darwin.
 const set_winsize: u32 = if (@import("builtin").target.os.tag == .macos)
@@ -119,6 +121,9 @@ pub fn spawn(slot: usize, initial: bool) bool {
         for (masters, 0..) |fd, i| if (i != slot and fd >= 0) {
             _ = c.close(fd);
         };
+        if (control_server) |*server| {
+            if (setenv("COMPO_SOCKET", &server.path, 1) != 0) c._exit(127);
+        }
         if (setenv("TERM", "xterm-256color", 1) != 0 or setenv("COLORTERM", "truecolor", 1) != 0) c._exit(127);
         if (command) |cmd| {
             const argv = [_:null]?[*:0]const u8{ shell, "-c", cmd };
@@ -152,14 +157,16 @@ fn loop(ws: *c.winsize) c_int {
             if (app.compositor_draw() != 0) return 1;
             dirty = false;
         }
-        var fds: [capacity + 1]c.pollfd = undefined;
+        var fds: [capacity + 1 + control.poll_count]c.pollfd = undefined;
         fds[0] = .{ .fd = 0, .events = c.POLL.IN, .revents = 0 };
         for (masters, 0..) |fd, index| fds[index + 1] = .{ .fd = fd, .events = c.POLL.IN, .revents = 0 };
+        control_server.?.pollfds(fds[capacity + 1 ..]);
         const ready = c.poll(&fds, fds.len, 50);
         if (ready < 0) {
             if (c.errno(ready) == .INTR) continue;
             return 1;
         }
+        control_server.?.service(fds[capacity + 1 ..], ws.col, ws.row);
         var bytes: [16384]u8 = undefined;
         for (0..capacity) |slot| {
             if (masters[slot] < 0 or fds[slot + 1].revents & (c.POLL.IN | c.POLL.HUP | c.POLL.ERR) == 0) continue;
@@ -201,6 +208,17 @@ pub fn run() c_int {
             c.getenv("TMUXPP_COMMAND") == null and c.getenv("TMUXPP_SIDEBAR_COMMAND") == null and c.getenv("TMUXPP_LEGACY") == null);
     count = if (desktop) 0 else if (c.getenv("TMUXPP_SINGLE") != null) 1 else if (c.getenv("TMUXPP_FLOAT") != null) 3 else 2;
     if (geometry(&ws) < 0 or ws.col == 0 or ws.row == 0) return 1;
+    control_server = control.Server.init() catch {
+        _ = writeAll(2, "Unable to create compo control socket\n");
+        return 1;
+    };
+    defer {
+        control_server.?.deinit();
+        control_server = null;
+    }
+    _ = writeAll(2, "COMPO_SOCKET=");
+    _ = writeAll(2, std.mem.sliceTo(&control_server.?.path, 0));
+    _ = writeAll(2, "\n");
     defer cleanupChildren();
     for (0..count) |slot| if (!spawn(slot, true)) return 1;
     const signals = [_]c.SIG{ .WINCH, .TERM, .HUP, .INT, .PIPE };
