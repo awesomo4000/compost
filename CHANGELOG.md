@@ -2,6 +2,8 @@
 
 ## 10/23/2026
 
+- Fixed floats being constrained by sidebar reservations. Alt-Control-left-drag now moves without docking or resizing, and Ctrl-] Tab raises and redraws the selected window within its layer. Border resizing remains available.
+
 - Connected the control socket to window list/get/create/place/focus/raise/lower/close operations, with stable instance/window references, named PTY children, launch failure reporting, exact floating placement, numeric layers, and a fixed-size headless host. Added lifecycle and layer tests. Changed the blank desktop logo to `compo`.
 
 ## 10/22/2026

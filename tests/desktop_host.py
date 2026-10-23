@@ -73,7 +73,7 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-docking-', dir='/tmp') as direct
     def sized(label, size):
         host.until(lambda: (root / (label + '.sizes')).read_text().splitlines()[-1] == str(size))
     def move(x, y, tx, ty, control=False):
-        send(f'\x1b[<8;{x};{y}M\x1b[<{56 if control else 40};{tx};{ty}M\x1b[<8;{tx};{ty}m'.encode())
+        send(f'\x1b[<8;{x};{y}M\x1b[<{48 if control else 40};{tx};{ty}M\x1b[<8;{tx};{ty}m'.encode())
     try:
         host.until(lambda: b'Ctrl-]' in host.text())
         a = create()

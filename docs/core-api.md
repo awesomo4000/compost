@@ -45,9 +45,9 @@ collapses the old branch if needed, and rejects invalid targets before mutation.
 copy. The host owns pointer gestures and process lifetime.
 
 Floats retain requested bounds and receive actual bounds constrained to the
-remaining usable rectangle. Shrinking the display can shrink a float; enlarging
-it restores the requested bounds where possible. All floats currently respect
-reserved space, including always-on-top floats.
+full root rectangle. Shrinking the display can shrink a float; enlarging
+it restores the requested bounds where possible. Dock reservations constrain tiles,
+not floats. Stacking still determines which overlapping windows are visible.
 
 ## Initial limits
 

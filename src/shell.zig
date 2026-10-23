@@ -40,7 +40,7 @@ var slots: [host.capacity]Slot = init: {
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true } };
     break :init result;
 };
-const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, split: ?usize = null, started: bool = false };
+const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, split: ?usize = null, free_move: bool = false, started: bool = false };
 var drag: ?Drag = null;
 var drag_original: ?core.Scene = null;
 var drag_dock_extent: ?i32 = null;
@@ -220,6 +220,8 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 const slot = &slots[(start + offset) % slots.len];
                 if (slot.surface != null and scene.get(slot.id).?.visible and !scene.get(slot.id).?.bounds.empty()) {
                     try focus(slot.id);
+                    try scene.raise(slot.id);
+                    layout_dirty = true;
                     break;
                 }
             }
@@ -300,7 +302,12 @@ fn event(_: *anyopaque, value: input.Event) !void {
                             active.bounds = try core.Rect.init(active.x - @divTrunc((active.x - active.bounds.x) * w, @max(1, active.bounds.w)), active.y - @divTrunc((active.y - active.bounds.y) * h, @max(1, active.bounds.h)), w, h);
                             drag.?.bounds = active.bounds;
                         }
-                        try scene.configure(active.id, .{ .kind = .{ .floating = active.bounds } });
+                        var options = scene.get(active.id).?.options;
+                        // Existing floats keep their layer. Undocking a wall
+                        // drops its always-on-top policy along with reservation.
+                        if (options.kind != .floating) options = .{ .kind = .{ .floating = active.bounds } };
+                        options.kind = .{ .floating = active.bounds };
+                        try scene.configure(active.id, options);
                         try scene.raise(active.id);
                     }
                     drag.?.started = true;
@@ -312,10 +319,10 @@ fn event(_: *anyopaque, value: input.Event) !void {
                         dock_extent = extent;
                         try scene.configure(active.id, .{ .kind = .{ .docked = .{ .edge = .left, .extent = extent } }, .always_on_top = true });
                     } else {
-                        const requested = decoration.adjust(active.bounds, active.edge, dx, dy, scene.usable);
+                        const requested = decoration.adjust(active.bounds, active.edge, dx, dy, scene.root);
                         try scene.moveResize(active.id, requested);
                     }
-                    destination = if (active.edge == .move) docking.pick(&scene, active.id, mouse.x, mouse.y, mouse.button & 16 != 0) else null;
+                    destination = if (active.edge == .move and !active.free_move and mouse.button & 24 != 24) docking.pick(&scene, active.id, mouse.x, mouse.y, mouse.button & 16 != 0) else null;
                     try applyLayout();
                 }
                 return;
@@ -328,7 +335,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 const on_border = !inner.contains(mouse.x, mouse.y);
                 const modified = mouse.button & 8 != 0 and mouse.button & 4 == 0 and (mouse.button & 3 == 0 or mouse.button & 3 == 2);
                 const border_edge = decoration.edgeAt(&scene, target, mouse.x, mouse.y);
-                const moving = modified and mouse.button & 3 == 0 and (on_border or mouse.button & 16 == 0);
+                const moving = modified and mouse.button & 3 == 0;
                 if ((border_edge != .divider and border_edge != .tile_vertical and border_edge != .tile_horizontal) or moving) try focus(target);
                 if (moving or (border_edge != null and mouse.button & 3 == 0) or
                     (window.options.kind == .floating and !on_border and modified))
@@ -337,7 +344,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                     drag_original = scene;
                     drag_dock_extent = dock_extent;
                     destination = null;
-                    drag = .{ .id = target, .x = mouse.x, .y = mouse.y, .bounds = window.bounds, .edge = action, .split = if (action == .tile_vertical) scene.dividerFor(target, .horizontal) else if (action == .tile_horizontal) scene.dividerFor(target, .vertical) else null };
+                    drag = .{ .id = target, .x = mouse.x, .y = mouse.y, .bounds = window.bounds, .edge = action, .free_move = moving and mouse.button & 16 != 0, .split = if (action == .tile_vertical) scene.dividerFor(target, .horizontal) else if (action == .tile_horizontal) scene.dividerFor(target, .vertical) else null };
                     try scene.capturePointer(target);
                     return;
                 }

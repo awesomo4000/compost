@@ -86,7 +86,7 @@ Creation returns `result.window`, `requested_rect`, and `scene_revision`. Use it
 Rectangles are zero-based outer cell bounds including borders, with minimum size
 3 by 3. Only floating placement is supported by the API. Exact fit is the default
 and rejects constraints that would change the requested rectangle. `constrain`
-applies normal workspace constraints and reports both requested and actual
+applies full-screen bounds and reports both requested and actual
 bounds. Placement requires a floating window and never changes neighboring tile
 sizes. Mutations during a pointer drag return `DragInProgress`.
 

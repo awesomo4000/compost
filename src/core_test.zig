@@ -47,11 +47,11 @@ test "nested tiles partition odd dimensions and removal collapses branches" {
     try equal(scene.root, scene.get(d).?.bounds);
 }
 
-test "floats respect walls and shrink with root; minimum failures are explicit" {
+test "floats cross reserved walls and shrink only with root; minimum failures are explicit" {
     var scene = try Scene.init(rect(0, 0, 100, 50));
     const wall = try scene.add(.{ .kind = .{ .docked = .{ .edge = .left, .extent = 20 } }, .always_on_top = true });
     const floating = try scene.add(.{ .kind = .{ .floating = rect(-100, 40, 60, 30) }, .min_width = 40 });
-    try equal(rect(20, 20, 60, 30), scene.get(floating).?.bounds);
+    try equal(rect(0, 20, 60, 30), scene.get(floating).?.bounds);
     try scene.moveResize(floating, rect(99, -99, 60, 30));
     try equal(rect(40, 0, 60, 30), scene.get(floating).?.bounds);
     try scene.setFocus(floating);
@@ -59,9 +59,9 @@ test "floats respect walls and shrink with root; minimum failures are explicit" 
     try scene.resizeRoot(rect(0, 0, 10, 5));
     try expect(scene.get(wall).?.constraints_unmet);
     try expect(scene.get(floating).?.constraints_unmet);
-    try equal(@as(i32, 0), scene.get(floating).?.bounds.w);
-    try equal(@as(?core.Id, null), scene.focus);
-    try equal(@as(?core.Id, null), scene.capture);
+    try equal(rect(0, 0, 10, 5), scene.get(floating).?.bounds);
+    try equal(@as(?core.Id, floating), scene.focus);
+    try equal(@as(?core.Id, floating), scene.capture);
     try scene.resizeRoot(rect(0, 0, 100, 50));
     try equal(rect(40, 0, 60, 30), scene.get(floating).?.bounds);
 }

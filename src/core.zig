@@ -416,7 +416,7 @@ pub const Scene = struct {
             self.layoutTiles(root, tile_area);
         } else self.first_tile_edge = null;
         for (&self.windows) |*maybe| if (maybe.*) |*w| {
-            if (w.options.kind == .floating) w.bounds = w.options.kind.floating.constrained(available);
+            if (w.options.kind == .floating) w.bounds = w.options.kind.floating.constrained(self.root);
             w.constraints_unmet = w.bounds.w < w.options.min_width or w.bounds.h < w.options.min_height;
             if (w.options.kind == .docked) {
                 const d = w.options.kind.docked;

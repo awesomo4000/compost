@@ -30,15 +30,15 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-float-', dir='/tmp') as director
         host.until(lambda: b'\x1b[11;46H\x1b[0mFLOAT01' in host.data)
         assert data('FLOAT', '.sizes') == original_sizes
         assert data('FLOAT', '.input') == b'hello'
-        # Control-Alt-left drag changes the PTY size without a secondary click.
-        os.write(host.master, b'\x1b[<24;46;11M\x1b[<56;50;13M\x1b[<24;50;13m')
+        # Alt-right drag resizes the PTY; border handles are the trackpad alternative.
+        os.write(host.master, b'\x1b[<10;46;11M\x1b[<42;50;13M\x1b[<10;50;13m')
         host.until(lambda: b'[30, 12]' in data('FLOAT', '.sizes'))
-        # Control-Alt-left is another trackpad-friendly resize gesture.
-        os.write(host.master, b'\x1b[<24;46;11M\x1b[<56;48;12M\x1b[<24;48;12m')
+        # Continue resizing without changing the floating origin.
+        os.write(host.master, b'\x1b[<10;46;11M\x1b[<42;48;12M\x1b[<10;48;12m')
         host.until(lambda: b'[32, 13]' in data('FLOAT', '.sizes'))
-        # Walls constrain movement at the left edge of the main area.
+        # Control-Alt-left moves freely without changing the PTY size or docking.
         host.data.clear()
-        os.write(host.master, b'\x1b[<8;46;11M\x1b[<40;1;1M\x1b[<8;1;1m')
+        os.write(host.master, b'\x1b[<24;46;11M\x1b[<56;26;1M\x1b[<24;26;1m')
         host.until(lambda: b'\x1b[2;26H\x1b[0mFLOAT01' in host.data)
         # Hide, restore the uncovered background, and direct typing to a base shell.
         host.data.clear()
@@ -58,4 +58,4 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-float-', dir='/tmp') as director
         host.finish(128 + signal.SIGTERM)
     finally:
         host.close()
-print('Floating shell: focus, drag, resize, wall constraints, hide/reveal, and close passed.')
+print('Floating shell: focus, drag, resize, free movement, hide/reveal, and close passed.')

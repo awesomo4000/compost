@@ -4,21 +4,23 @@
 using `$SHELL` or `/bin/sh`. Up to 32 shells can run. Closing the last shell
 returns to the desktop; Ctrl-] q closes all children and quits.
 
-Option-left-drag moves a float. Option-dragging a tiled or wall border pulls it
+Option-left-drag moves a float. Option-Control-left-drag moves freely across the
+full screen without docking or resizing. Border handles still resize. Option-dragging a tiled or wall border pulls it
 out after a small movement threshold, restoring its remembered floating size.
 Drag near a workspace edge to split the whole tiled area. Over an existing
 tile, broad left/right/top/bottom zones split that tile; the central 40% in both
 dimensions leaves the window floating. The outer workspace band takes priority. A muted gray-blue rectangle previews the destination. The first edge drop
 occupies that half of the desktop; adding another tile fills the tiled area. Release commits;
-Escape restores the original layout. Each split starts at 50/50. Hold Control
-during the move to create a wall at a workspace edge instead. Walls reserve one
+Escape restores the original layout. Each split starts at 50/50. For a wall drop, start an Option-drag, then release Option and hold Control
+while moving to a workspace edge. Walls reserve one
 third of the available dimension. Existing shells retain their PTYs and IDs.
 The preview does not resize neighbors until release. Tiles share one border. Drag a shared vertical or horizontal divider to resize
 both sides without changing focus. Nested splits resize within their parent;
 Escape cancels. Float edges/corners and the legacy left sidebar divider also
 support dragging. Four-sided wall resizing remains future work. The preview consumes no window slot.
 
-Click or Ctrl-] Tab focuses a window. Ctrl-] twice sends a literal Ctrl-].
+Click focuses a window. Ctrl-] Tab cycles focus and raises the selected window
+within its layer, repainting retained content even when the child is idle. Ctrl-] twice sends a literal Ctrl-].
 The user's tmux prefix passes through. Ctrl-] f toggles a floating window.
 
 `TMUXPP_LEGACY=1` starts the original left dock and main tile. `TMUXPP_SINGLE=1`
@@ -117,15 +119,16 @@ The sidebar and main shell share one draggable divider that changes their widths
 together without changing keyboard focus. Its color reflects focus in either
 adjacent terminal. Hovering
 a draggable edge brightens that edge within its active/inactive color scheme.
-Control-Option-left-drag inside a float resizes its bottom-right corner;
-Option-right-drag is also available. Shift-Option is not a compositor gesture,
+Option-right-drag inside a float resizes its bottom-right corner.
+Control-Option-left-drag moves it without docking. Shift-Option is not a compositor gesture,
 since the outer terminal uses it for rectangular selection. On macOS, Alt is
 Option. The outer terminal must forward modified mouse
 events. These gestures are consumed by the compositor; ordinary mouse events
 still go to the child. `TMUXPP_FLOAT_COMMAND` optionally supplies its command.
 `TMUXPP_SINGLE` takes precedence over the floating-shell option.
 
-The dock acts as a wall. Floats stay inside the remaining usable rectangle.
+Docks reserve tile space. Floats can move across the full screen; stacking
+still determines visibility where they overlap an always-on-top dock.
 Moving does not resize the child or send SIGWINCH; changing its size does.
 Layout changes repaint exposed content, and an obscured background cursor stays
 hidden. Terminals have one-cell box borders; the main shell uses the sidebar divider as
@@ -169,7 +172,9 @@ perform no allocations or frees, including an explicit repaint. Screen growth,
 new styles or images, and layout changes may still require allocations.
 
 `tests/floating_host.py` checks floating-shell focus, intercepted drag gestures,
-PTY resizing, movement without SIGWINCH, wall constraints, hide/reveal, and close.
+PTY resizing, movement without SIGWINCH, hide/reveal, and close.
+`tests/window_navigation.py` checks free movement to every screen corner across
+dock reservations and Tab raising/repainting a covered idle float.
 Renderer tests round-trip occlusion and restoration of text and image placements.
 
 `tests/borders_host.py` checks hover highlighting, each anchored float edge,

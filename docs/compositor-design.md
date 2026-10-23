@@ -51,8 +51,8 @@ an edge of a layout container. All three use the same window identities.
 
 Always-on-top and space reservation are independent properties. A sidebar
 normally has both. An overlay may be on top without reserving space. Ordinary
-floating windows are constrained to the remaining usable rectangle when moved,
-resized, or when the root or docks change. Raising them does not raise them over
+floating windows are constrained to the full root rectangle when moved,
+resized, or when the root changes. Dock reservations affect tiles, not floats. Raising them does not raise them over
 an always-on-top panel.
 
 Start with edge docks that consume a strip from the remaining rectangle in a
