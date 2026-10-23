@@ -222,3 +222,20 @@ test "divider resizing adjusts a nested split while preserving its sibling" {
     try scene.resizeDivider(horizontal, 200);
     try equal(@as(i32, 3), scene.get(c).?.bounds.h);
 }
+
+test "numeric layers dominate raise and always on top for hit testing and occlusion" {
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 80, 24));
+    const bounds = try core.Rect.init(4, 3, 30, 12);
+    const low = try scene.add(.{ .kind = .{ .floating = bounds }, .layer = -100, .always_on_top = true });
+    const high = try scene.add(.{ .kind = .{ .floating = bounds } });
+    try scene.raise(low);
+    try std.testing.expectEqual(high, scene.hitTest(5, 5).?);
+    var region = try scene.visibleRegion(std.testing.allocator, low);
+    defer region.deinit(std.testing.allocator);
+    try std.testing.expectEqual(@as(usize, 0), region.items.len);
+    const peer = try scene.add(.{ .kind = .{ .floating = bounds } });
+    try std.testing.expectEqual(peer, scene.hitTest(5, 5).?);
+    try scene.lower(peer);
+    try std.testing.expectEqual(high, scene.hitTest(5, 5).?);
+    try std.testing.expectError(error.InvalidLayer, scene.configure(low, .{ .kind = .tiled, .layer = -100 }));
+}

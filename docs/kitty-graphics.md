@@ -52,7 +52,11 @@ rendering conformance run was performed in this audit.
 ## Implementation direction
 
 Prefer adapting tmm's libghostty-vt integration before independently implementing
-all missing Kitty semantics in tmux's parser. Audit the selected libghostty-vt version
+all missing Kitty semantics in tmux's parser. Use the `compositor-final` tag
+in `awesomo4000/tmm`, commit `eeb0616`, rather than its current working tree.
+See [the archived source instructions](vt-integration.md#direction) for reading
+its code, tests, dependency notes, and `handoff.md`.
+Audit the selected libghostty-vt version
 and its exposed API too. tmm's PNG, virtual placement, relative placement, and
 pixel-size tests are valuable starting cases, not proof of complete support.
 

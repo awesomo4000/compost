@@ -3,7 +3,13 @@ const std = @import("std");
 pub const max_frame = 64 * 1024;
 pub const max_queue = 1024 * 1024;
 pub const max_pending = 64;
-pub const Info = struct { instance: []const u8, columns: u16, rows: u16 };
+pub const operations = [_][]const u8{ "window.list", "window.get", "window.create", "window.place", "window.focus", "window.raise", "window.lower", "window.close" };
+pub const Info = struct {
+    instance: []const u8,
+    columns: u16,
+    rows: u16,
+    dispatch: ?*const fn (std.mem.Allocator, std.json.Value, []const u8) anyerror![]u8 = null,
+};
 pub const Session = struct {
     ready: bool = false,
     pub fn respond(self: *Session, allocator: std.mem.Allocator, line: []const u8, info: Info) ![]u8 {
@@ -17,6 +23,14 @@ pub const Session = struct {
         const op = object.get("op") orelse return failure(allocator, id, "invalid_request", "Missing operation");
         if (op != .string) return failure(allocator, id, "invalid_request", "Operation must be a string");
         const hello = std.mem.eql(u8, op.string, "hello");
+        var application_op = false;
+        for (operations) |known| if (std.mem.eql(u8, op.string, known)) {
+            application_op = true;
+        };
+        if (application_op and info.dispatch != null) {
+            if (!self.ready) return failure(allocator, id, "handshake_required", "Send hello first");
+            return info.dispatch.?(allocator, parsed.value, info.instance) catch |err| failure(allocator, id, @errorName(err), "Window operation failed");
+        }
         for (object.keys()) |key| {
             if (!std.mem.eql(u8, key, "id") and !std.mem.eql(u8, key, "op") and !(hello and std.mem.eql(u8, key, "version"))) return failure(allocator, id, "invalid_request", "Unknown request field");
         }
@@ -27,7 +41,7 @@ pub const Session = struct {
             const bytes = try std.json.Stringify.valueAlloc(allocator, .{ .id = id, .result = .{
                 .version = 1,
                 .instance = info.instance,
-                .operations = [_][]const u8{ "hello", "ping" },
+                .operations = if (info.dispatch != null) &([_][]const u8{ "hello", "ping" } ++ operations) else &[_][]const u8{ "hello", "ping" },
                 .capabilities = [_][]const u8{},
                 .limits = .{ .max_frame_bytes = max_frame, .max_queue_bytes = max_queue, .max_pending_requests = max_pending },
                 .root = .{ .x = 0, .y = 0, .w = info.columns, .h = info.rows },

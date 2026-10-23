@@ -34,7 +34,7 @@ fn flushDiagnostics() void {
     if (diagnostic_overflow) std.log.warn("additional terminal diagnostics omitted", .{});
 }
 const host = @import("host.zig");
-const Slot = struct { index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
+const Slot = struct { name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
     var result: [host.capacity]Slot = undefined;
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true } };
@@ -75,6 +75,8 @@ pub fn main(init: std.process.Init) !void {
     defer if (border_output) |*output| output.deinit();
     defer for (&slots) |*slot| {
         if (slot.surface) |s| s.destroy();
+        if (slot.name) |name| allocator.free(name);
+        if (slot.command) |command| allocator.free(command);
         slot.renderer.deinit(allocator);
     };
     const status = host.run();
@@ -457,10 +459,10 @@ fn draw() !void {
         output.clearRetainingCapacity();
         for (&slots) |*slot| if (slot.surface != null) try decoration.draw(&output.writer, &render_scene, slot.id, if (hover_id == slot.id) hover_edge else null);
         if (!hasShells()) {
-            const label = "tmux++";
+            const label = "compo";
             const hint = "Ctrl-] Enter: shell   Ctrl-] q: quit";
             if (scene.root.w >= hint.len and scene.root.h >= 4) {
-                try output.writer.print("\x1b[{d};{d}H\x1b[36mtmux++\x1b[0m\x1b[{d};{d}H{s}", .{ @divTrunc(scene.root.h, 2), @divTrunc(scene.root.w - @as(i32, label.len), 2) + 1, @divTrunc(scene.root.h, 2) + 2, @divTrunc(scene.root.w - @as(i32, hint.len), 2) + 1, hint });
+                try output.writer.print("\x1b[{d};{d}H\x1b[36mcompo\x1b[0m\x1b[{d};{d}H{s}", .{ @divTrunc(scene.root.h, 2), @divTrunc(scene.root.w - @as(i32, label.len), 2) + 1, @divTrunc(scene.root.h, 2) + 2, @divTrunc(scene.root.w - @as(i32, hint.len), 2) + 1, hint });
             }
         }
         try display(output.written());
@@ -513,6 +515,10 @@ pub fn compositor_exit(index: c_int) c_int {
     clearImages(slot);
     slot.surface.?.destroy();
     slot.surface = null;
+    if (slot.name) |name| allocator.free(name);
+    if (slot.command) |command| allocator.free(command);
+    slot.name = null;
+    slot.command = null;
     const next_image = slot.renderer.next_image;
     slot.renderer.deinit(allocator);
     slot.renderer = .{ .next_image = next_image, .image_stride = host.capacity, .framed = false, .bordered = true };
@@ -549,4 +555,198 @@ pub fn compositor_exit(index: c_int) c_int {
 }
 pub fn compositor_finish() void {
     for (&slots) |*slot| clearImages(slot);
+}
+
+pub var control_dirty = false;
+const Placement = struct {
+    kind: enum { floating },
+    rect: core.Rect,
+    fit: enum { exact, constrain } = .exact,
+    layer: i32 = 0,
+};
+const ControlRequest = struct {
+    id: []const u8,
+    op: []const u8,
+    window: ?[]const u8 = null,
+    name: ?[]const u8 = null,
+    argv: ?[]const []const u8 = null,
+    cwd: ?[]const u8 = null,
+    env: std.json.ArrayHashMap([]const u8) = .{},
+    placement: ?Placement = null,
+    focus: bool = false,
+};
+const WindowInfo = struct {
+    window: []const u8,
+    name: ?[]const u8,
+    command: ?[]const u8,
+    state: []const u8 = "running",
+    rect: core.Rect,
+    content: core.Rect,
+    columns: u16,
+    rows: u16,
+    cell_width: u16,
+    cell_height: u16,
+    kind: []const u8,
+    layer: i32,
+    order: u64,
+    visible: bool,
+    focused: bool,
+};
+fn windowInfo(a: std.mem.Allocator, instance: []const u8, slot: *const Slot) !WindowInfo {
+    const w = scene.get(slot.id).?;
+    const s = slot.surface.?;
+    return .{
+        .window = try std.fmt.allocPrint(a, "{s}/{d}", .{ instance, slot.id }),
+        .name = slot.name,
+        .command = slot.command,
+        .rect = w.bounds,
+        .content = decoration.contentFor(&scene, slot.id),
+        .columns = s.size.columns,
+        .rows = s.size.rows,
+        .cell_width = pixel_width,
+        .cell_height = pixel_height,
+        .kind = @tagName(w.options.kind),
+        .layer = w.options.layer,
+        .order = w.order,
+        .visible = w.visible,
+        .focused = scene.focus == slot.id,
+    };
+}
+fn resolveWindow(instance: []const u8, reference: ?[]const u8) !*Slot {
+    const ref = reference orelse return error.MissingWindow;
+    if (ref.len <= instance.len + 1 or !std.mem.startsWith(u8, ref, instance) or ref[instance.len] != '/') return error.UnknownWindow;
+    const id = std.fmt.parseInt(core.Id, ref[instance.len + 1 ..], 10) catch return error.UnknownWindow;
+    for (&slots) |*slot| if (slot.surface != null and slot.id == id) return slot;
+    return error.UnknownWindow;
+}
+fn validString(value: []const u8) bool {
+    return std.mem.indexOfScalar(u8, value, 0) == null;
+}
+fn placementScene(candidate: *core.Scene, id: ?core.Id, placement: Placement) !core.Id {
+    const rect = try core.Rect.init(placement.rect.x, placement.rect.y, placement.rect.w, placement.rect.h);
+    if (rect.w < 3 or rect.h < 3) return error.InvalidBounds;
+    const options: core.Options = .{ .kind = .{ .floating = rect }, .layer = placement.layer };
+    const target = if (id) |existing| blk: {
+        if (candidate.get(existing).?.options.kind != .floating) return error.NotFloating;
+        try candidate.configure(existing, options);
+        break :blk existing;
+    } else try candidate.add(options);
+    const actual = candidate.get(target).?.bounds;
+    if (actual.w < 3 or actual.h < 3) return error.InvalidBounds;
+    if (placement.fit == .exact and !std.meta.eql(rect, actual)) return error.PlacementRejected;
+    return target;
+}
+
+pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []const u8) ![]u8 {
+    const parsed = std.json.parseFromValue(ControlRequest, a, value, .{}) catch return error.InvalidRequest;
+    defer parsed.deinit();
+    const req = parsed.value;
+    const create = std.mem.eql(u8, req.op, "window.create");
+    const list = std.mem.eql(u8, req.op, "window.list");
+    const get = std.mem.eql(u8, req.op, "window.get");
+    const place = std.mem.eql(u8, req.op, "window.place");
+    // Reject even valid field names when they do not apply to this operation.
+    for (value.object.keys()) |key| {
+        if (std.mem.eql(u8, key, "id") or std.mem.eql(u8, key, "op")) continue;
+        if (!list and !create and std.mem.eql(u8, key, "window")) continue;
+        if ((create or place) and std.mem.eql(u8, key, "placement")) continue;
+        if (create) {
+            var allowed = false;
+            for ([_][]const u8{ "name", "argv", "cwd", "env", "focus" }) |field| if (std.mem.eql(u8, key, field)) {
+                allowed = true;
+            };
+            if (allowed) continue;
+        }
+        return error.InvalidRequest;
+    }
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const temp = arena.allocator();
+    if (list) {
+        var windows: [host.capacity]WindowInfo = undefined;
+        var n: usize = 0;
+        for (&slots) |*slot| if (slot.surface != null) {
+            windows[n] = try windowInfo(temp, instance, slot);
+            n += 1;
+        };
+        return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .windows = windows[0..n], .scene_revision = scene.revision } }, .{});
+    }
+    if (drag != null and !get) return error.DragInProgress;
+    var slot: *Slot = undefined;
+    if (create) {
+        const argv = req.argv orelse return error.MissingArgv;
+        if (argv.len == 0 or argv.len > 128 or argv[0].len == 0 or argv[0].len > 512 or argv[0][0] != '/') return error.InvalidArgv;
+        var total: usize = 0;
+        for (argv) |arg| {
+            if (!validString(arg)) return error.InvalidArgv;
+            total += arg.len;
+        }
+        if (total > 8192) return error.InvalidArgv;
+        if (req.cwd) |cwd| if (!validString(cwd) or cwd.len == 0 or cwd[0] != '/') return error.InvalidCwd;
+        for (req.env.map.keys(), req.env.map.values()) |key, val| {
+            if (key.len == 0 or !validString(key) or !validString(val) or std.mem.indexOfScalar(u8, key, '=') != null) return error.InvalidEnvironment;
+        }
+        if (req.name) |name| {
+            if (name.len == 0 or name.len > 128 or !validString(name)) return error.InvalidName;
+            for (&slots) |existing| if (existing.name) |other| if (std.mem.eql(u8, name, other)) return error.NameInUse;
+        }
+        const metadata = try std.json.Stringify.valueAlloc(temp, .{ .name = req.name, .command = argv[0] }, .{});
+        if (metadata.len > 1024) return error.MetadataTooLarge;
+        var available: ?*Slot = null;
+        for (&slots) |*candidate| if (candidate.surface == null) {
+            available = candidate;
+            break;
+        };
+        slot = available orelse return error.CapacityExceeded;
+        var candidate = scene;
+        const id = try placementScene(&candidate, null, req.placement orelse return error.MissingPlacement);
+        const name = if (req.name) |name| try allocator.dupe(u8, name) else null;
+        errdefer if (name) |n| allocator.free(n);
+        const command = try allocator.dupe(u8, argv[0]);
+        errdefer allocator.free(command);
+        const bounds = decoration.contentFor(&candidate, id);
+        const s = try terminal.Surface.create(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write });
+        errdefer s.destroy();
+        if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
+        try host.spawnCommand(@intCast(slot.index), argv, req.cwd, req.env);
+        scene = candidate;
+        slot.id = id;
+        slot.surface = s;
+        slot.name = name;
+        slot.command = command;
+        slot.floating_bounds = null;
+        slot.drawn_revision = null;
+        slot.renderer.invalidate(allocator);
+        if (req.focus) try focus(id);
+    } else {
+        slot = try resolveWindow(instance, req.window);
+        if (place) {
+            var candidate = scene;
+            _ = try placementScene(&candidate, slot.id, req.placement orelse return error.MissingPlacement);
+            const bounds = decoration.contentFor(&candidate, slot.id);
+            const old = slot.surface.?.size;
+            if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
+            _ = slot.surface.?.resize(.{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }) catch |err| {
+                _ = host.setSize(slot.index, old.columns, old.rows, pixel_width, pixel_height);
+                return err;
+            };
+            scene = candidate;
+        } else if (std.mem.eql(u8, req.op, "window.close")) {
+            host.closeWindow(@intCast(slot.index));
+            if (compositor_exit(slot.index) != 0) return error.CloseFailed;
+            control_dirty = true;
+            return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .removed = req.window.?, .scene_revision = scene.revision } }, .{});
+        } else if (std.mem.eql(u8, req.op, "window.focus")) {
+            try focus(slot.id);
+        } else if (std.mem.eql(u8, req.op, "window.raise")) {
+            try scene.raise(slot.id);
+        } else if (std.mem.eql(u8, req.op, "window.lower")) {
+            try scene.lower(slot.id);
+        } else if (!get) return error.UnknownOperation;
+    }
+    if (!get) {
+        control_dirty = true;
+        layout_dirty = true;
+    }
+    return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .window = try windowInfo(temp, instance, slot), .requested_rect = if (req.placement) |p| @as(?core.Rect, p.rect) else null, .scene_revision = scene.revision } }, .{});
 }

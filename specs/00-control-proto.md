@@ -1,6 +1,9 @@
 # Compo control protocol
 
-Status: proposed. This document describes work to implement, not an existing API.
+Status: staged implementation. Transport and floating window lifecycle are
+implemented; see [the current API](../docs/control-protocol.md) for supported
+operations and limits. The complete protocol below remains the target, including
+asynchronous lifecycle waits, observation, input, subscriptions, and the CLI.
 
 ## Purpose
 

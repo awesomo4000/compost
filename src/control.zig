@@ -1,6 +1,7 @@
 //! Nonblocking local control transport. Called only by the host event loop.
 const std = @import("std");
 const c = std.c;
+const app = @import("root");
 const protocol = @import("control_protocol.zig");
 extern "c" fn mkdtemp([*:0]u8) ?[*:0]u8;
 extern "c" fn arc4random_buf([*]u8, usize) void;
@@ -142,7 +143,7 @@ pub const Server = struct {
         for (&self.clients, fds[1..]) |*maybe, fd| if (maybe.*) |client| {
             const result: ?anyerror = blk: {
                 if (fd.revents & (c.POLL.ERR | c.POLL.NVAL | c.POLL.HUP) != 0) break :blk error.Disconnected;
-                if (fd.revents & c.POLL.IN != 0) client.readReady(.{ .instance = &self.instance, .columns = columns, .rows = rows }) catch |err| break :blk err;
+                if (fd.revents & c.POLL.IN != 0) client.readReady(.{ .instance = &self.instance, .columns = columns, .rows = rows, .dispatch = app.controlDispatch }) catch |err| break :blk err;
                 if (fd.revents & c.POLL.OUT != 0) client.writeReady() catch |err| break :blk err;
                 break :blk null;
             };

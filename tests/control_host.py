@@ -67,8 +67,8 @@ with tempfile.TemporaryDirectory(prefix='compo-control-test-', dir='/tmp') as di
         instance = hello['result']['instance']
         assert len(instance) == 32
         assert hello['result']['root'] == dict(x=0, y=0, w=80, h=24)
-        assert hello['result']['operations'] == ['hello', 'ping']
-        wire.socket.sendall(b'{oops}\n' + json.dumps(dict(id='unknown', op='window.create')).encode() + b'\n')
+        assert 'window.create' in hello['result']['operations']
+        wire.socket.sendall(b'{oops}\n' + json.dumps(dict(id='unknown', op='nonexistent')).encode() + b'\n')
         assert wire.read()['error']['code'] == 'invalid_json'
         assert wire.read()['error']['code'] == 'unknown_operation'
         wire.send(dict(id='field', op='ping', typo=1))

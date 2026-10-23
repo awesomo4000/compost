@@ -1,4 +1,4 @@
-# tmux++
+# Compo
 
 An experiment in a standalone terminal compositor that can host shells, tmux
 clients, and controller sidebars. A Zig window-management core owns geometry,
@@ -164,7 +164,9 @@ for baseline and release-validation requirements.
 
 ## Agent control protocol
 
-The initial persistent local socket supports version negotiation and ping. Child
-shells receive its path in `COMPO_SOCKET`. Window control is the next stage. See
+The persistent local socket supports window discovery, creation, floating placement,
+layers, focus, stacking, and removal. Child shells receive its path in
+`COMPO_SOCKET`. Use `COMPO_HEADLESS=80x24` for a disposable host without a physical
+terminal. Screen observation and injected input are the next stage. See
 [the current interface](docs/control-protocol.md) and
 [the development spec](specs/00-control-proto.md).

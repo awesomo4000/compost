@@ -3,9 +3,24 @@
 ## Direction
 
 Evaluate libghostty-vt for application terminals in this tmux fork, including
-the static sidebar. `../tmm` already provides the relevant external experiment.
+the static sidebar. The `compositor-final` tag in `awesomo4000/tmm`, commit
+`eeb0616`, preserves the relevant external experiment. The current `../tmm`
+working tree no longer contains its compositor code.
 Use it as a source of code, tests, and lessons. Do not link tmm as a dependency,
 copy it wholesale, or treat its behavior as a correctness oracle.
+
+All tmm paths below refer to that tag. Read them without changing the checkout:
+
+```sh
+git -C ../tmm show compositor-final:src/surface.zig
+git -C ../tmm show compositor-final:handoff.md
+git -C ../tmm show compositor-final:tools/deps-check.sh
+git -C ../tmm show compositor-final:vendor/README.md
+```
+
+`handoff.md` contains the design and measurement notes. `tools/deps-check.sh`
+tracks libghostty-vt releases and OSC 7501 work; `vendor/README.md` records the
+dependency pin. Prefer the tag over the movable `compositor-archive` branch.
 
 The earlier `../ghostmux/docs/shim-analysis.md` is additional research against
 an older tmux and libghostty-vt snapshot. Its architectural observations are useful;

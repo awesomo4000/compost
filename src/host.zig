@@ -18,6 +18,7 @@ extern "c" fn execv([*:0]const u8, [*:null]const ?[*:0]const u8) c_int;
 
 pub const capacity = 32;
 pub var desktop = false;
+var headless = false;
 var quit_requested = false;
 var original: c.termios = undefined;
 var children: [capacity]c.pid_t = @splat(-1);
@@ -59,9 +60,10 @@ pub fn setSize(slot: c_int, cols: u16, rows: u16, cw: u16, ch: u16) c_int {
     return if (masters[index] < 0) 0 else c.ioctl(masters[index], @as(c_int, @bitCast(set_winsize)), &sizes[index]);
 }
 pub fn display(bytes: []const u8) c_int {
-    return writeAll(1, bytes);
+    return if (headless) 0 else writeAll(1, bytes);
 }
 fn geometry(ws: *c.winsize) c_int {
+    if (headless) return app.compositor_resize(ws.col, ws.row, 8, 16, 0);
     if (c.ioctl(0, @as(c_int, @bitCast(@as(u32, c.T.IOCGWINSZ))), ws) < 0) return -1;
     if (ws.col == 0 or ws.row == 0) return 0;
     return app.compositor_resize(ws.col, ws.row, ws.xpixel / ws.col, ws.ypixel / ws.row, @intCast(count));
@@ -112,7 +114,7 @@ pub fn spawn(slot: usize, initial: bool) bool {
     const env_shell = c.getenv("SHELL");
     const shell: [*:0]const u8 = if (env_shell != null and env_shell.?[0] == '/') env_shell.? else "/bin/sh";
     const command = c.getenv(if (initial and slot == 0 and count >= 2) "TMUXPP_SIDEBAR_COMMAND" else if (initial and slot == 2) "TMUXPP_FLOAT_COMMAND" else "TMUXPP_COMMAND");
-    const child = forkpty(&masters[slot], null, &original, &sizes[slot]);
+    const child = forkpty(&masters[slot], null, if (headless) null else &original, &sizes[slot]);
     if (child < 0) {
         masters[slot] = -1;
         return false;
@@ -158,7 +160,7 @@ fn loop(ws: *c.winsize) c_int {
             dirty = false;
         }
         var fds: [capacity + 1 + control.poll_count]c.pollfd = undefined;
-        fds[0] = .{ .fd = 0, .events = c.POLL.IN, .revents = 0 };
+        fds[0] = .{ .fd = if (headless) -1 else 0, .events = c.POLL.IN, .revents = 0 };
         for (masters, 0..) |fd, index| fds[index + 1] = .{ .fd = fd, .events = c.POLL.IN, .revents = 0 };
         control_server.?.pollfds(fds[capacity + 1 ..]);
         const ready = c.poll(&fds, fds.len, 50);
@@ -166,9 +168,17 @@ fn loop(ws: *c.winsize) c_int {
             if (c.errno(ready) == .INTR) continue;
             return 1;
         }
+        const polled_children = children;
         control_server.?.service(fds[capacity + 1 ..], ws.col, ws.row);
+        if (app.control_dirty) {
+            dirty = true;
+            app.control_dirty = false;
+        }
         var bytes: [16384]u8 = undefined;
         for (0..capacity) |slot| {
+            // Control may reuse a slot and even its fd. Match the child identity
+            // too, while still servicing unaffected PTYs during control traffic.
+            if (polled_children[slot] != children[slot] or fds[slot + 1].fd != masters[slot]) continue;
             if (masters[slot] < 0 or fds[slot + 1].revents & (c.POLL.IN | c.POLL.HUP | c.POLL.ERR) == 0) continue;
             const n = c.read(masters[slot], &bytes, bytes.len);
             if (n > 0) {
@@ -199,11 +209,19 @@ fn loop(ws: *c.winsize) c_int {
 }
 pub fn run() c_int {
     var ws: c.winsize = std.mem.zeroes(c.winsize);
-    if (c.isatty(0) == 0 or c.isatty(1) == 0 or c.tcgetattr(0, &original) < 0) {
+    headless = c.getenv("COMPO_HEADLESS") != null;
+    if (headless) {
+        const dimensions = std.mem.span(c.getenv("COMPO_HEADLESS").?);
+        const split = std.mem.indexOfScalar(u8, dimensions, 'x') orelse return 1;
+        ws.col = std.fmt.parseInt(u16, dimensions[0..split], 10) catch return 1;
+        ws.row = std.fmt.parseInt(u16, dimensions[split + 1 ..], 10) catch return 1;
+        if (ws.col < 3 or ws.row < 3 or ws.col > 1000 or ws.row > 1000) return 1;
+    }
+    if (!headless and (c.isatty(0) == 0 or c.isatty(1) == 0 or c.tcgetattr(0, &original) < 0)) {
         _ = writeAll(2, "compo needs a terminal on stdin and stdout\n");
         return 1;
     }
-    desktop = c.getenv("TMUXPP_DESKTOP") != null or
+    desktop = headless or c.getenv("TMUXPP_DESKTOP") != null or
         (c.getenv("TMUXPP_SINGLE") == null and c.getenv("TMUXPP_FLOAT") == null and
             c.getenv("TMUXPP_COMMAND") == null and c.getenv("TMUXPP_SIDEBAR_COMMAND") == null and c.getenv("TMUXPP_LEGACY") == null);
     count = if (desktop) 0 else if (c.getenv("TMUXPP_SINGLE") != null) 1 else if (c.getenv("TMUXPP_FLOAT") != null) 3 else 2;
@@ -234,21 +252,84 @@ pub fn run() c_int {
         if (c.sigaction(sig, &action, old) != 0) return 1;
         installed += 1;
     }
-    var raw = original;
-    cfmakeraw(&raw);
-    if (c.tcsetattr(0, .NOW, &raw) < 0) return 1;
+    if (!headless) {
+        var raw = original;
+        cfmakeraw(&raw);
+        if (c.tcsetattr(0, .NOW, &raw) < 0) return 1;
+    }
     defer {
-        _ = c.tcsetattr(0, .NOW, &original);
+        if (!headless) _ = c.tcsetattr(0, .NOW, &original);
     }
     defer {
         app.compositor_finish();
-        _ = writeAll(1, "\x1b[?2026l\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[?1049l");
+        _ = display("\x1b[?2026l\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[?1049l");
     }
-    if (writeAll(1, "\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J") != 0) return 1;
+    if (display("\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J") != 0) return 1;
     const result = loop(&ws);
     cleanupChildren();
     if (signalValue(&stopped).* != 0) return 128 + signalValue(&stopped).*;
     if (result != 0) return result;
     const status: u32 = @bitCast(main_status orelse 0);
     return if (c.W.IFEXITED(status)) c.W.EXITSTATUS(status) else 128 + @as(c_int, @intCast(@backingInt(c.W.TERMSIG(status))));
+}
+
+pub fn closeWindow(slot: usize) void {
+    cleanupSlot(slot);
+}
+
+/// The CLOEXEC status pipe distinguishes successful exec from child setup failure.
+/// All strings and pointer arrays are prepared before fork.
+pub fn spawnCommand(slot: usize, argv: []const []const u8, cwd: ?[]const u8, env: std.json.ArrayHashMap([]const u8)) !void {
+    const a = std.heap.smp_allocator;
+    var arena = std.heap.ArenaAllocator.init(a);
+    defer arena.deinit();
+    const temp = arena.allocator();
+    const args = try temp.allocSentinel(?[*:0]const u8, argv.len, null);
+    for (argv, 0..) |arg, i| args[i] = try temp.dupeSentinel(u8, arg, 0);
+    const directory = if (cwd) |path| try temp.dupeSentinel(u8, path, 0) else null;
+    const Pair = struct { key: [:0]u8, value: [:0]u8 };
+    const pairs = try temp.alloc(Pair, env.map.count());
+    for (env.map.keys(), env.map.values(), pairs) |key, value, *pair| pair.* = .{ .key = try temp.dupeSentinel(u8, key, 0), .value = try temp.dupeSentinel(u8, value, 0) };
+    var pipe: [2]c.fd_t = undefined;
+    if (c.pipe(&pipe) != 0) return error.SpawnFailed;
+    defer _ = c.close(pipe[0]);
+    var writer_open = true;
+    defer if (writer_open) {
+        _ = c.close(pipe[1]);
+    };
+    if (c.fcntl(pipe[1], c.F.SETFD, @as(c_int, 1)) < 0) return error.SpawnFailed;
+    const pid = forkpty(&masters[slot], null, if (headless) null else &original, &sizes[slot]);
+    if (pid < 0) {
+        masters[slot] = -1;
+        return error.SpawnFailed;
+    }
+    if (pid == 0) {
+        _ = c.close(pipe[0]);
+        for (masters, 0..) |fd, i| if (i != slot and fd >= 0) {
+            _ = c.close(fd);
+        };
+        var valid = true;
+        if (directory) |path| valid = c.chdir(path) == 0;
+        if (setenv("TERM", "xterm-256color", 1) != 0 or setenv("COLORTERM", "truecolor", 1) != 0) valid = false;
+        for (pairs) |pair| if (setenv(pair.key, pair.value, 1) != 0) {
+            valid = false;
+        };
+        if (control_server) |*server| if (setenv("COMPO_SOCKET", &server.path, 1) != 0) {
+            valid = false;
+        };
+        if (valid) _ = execv(args[0].?, args.ptr);
+        _ = c.write(pipe[1], "!", 1);
+        c._exit(127);
+    }
+    children[slot] = pid;
+    statuses[slot] = 0;
+    _ = c.close(pipe[1]);
+    writer_open = false;
+    var fd = [_]c.pollfd{.{ .fd = pipe[0], .events = c.POLL.IN, .revents = 0 }};
+    const ready = c.poll(&fd, 1, 1000);
+    var byte: [1]u8 = undefined;
+    if (ready <= 0 or c.read(pipe[0], &byte, 1) != 0) {
+        cleanupSlot(slot);
+        return error.ExecFailed;
+    }
 }

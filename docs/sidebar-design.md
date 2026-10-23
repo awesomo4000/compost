@@ -38,7 +38,9 @@ session-scoped, so the new static terminal needs client-owned effective settings
 The existing `config/sidebar.conf` demonstrates native side status only. It does
 not implement the shell-backed sidebar described here.
 
-`../tmm` is reference code, not a dependency. Copy and adapt useful pieces,
+The `compositor-final` tag in `../tmm`, commit `eeb0616`, is reference code,
+not a dependency. Its current working tree no longer has the compositor files.
+Copy and adapt useful pieces,
 retaining their notices, and use its tests as evidence to recheck. It is early
 code with known bugs. Do not import its external control-client machinery into
 tmux. See [the VT integration plan](vt-integration.md).

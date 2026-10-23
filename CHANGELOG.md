@@ -1,5 +1,9 @@
 # Changelog
 
+## 10/23/2026
+
+- Connected the control socket to window list/get/create/place/focus/raise/lower/close operations, with stable instance/window references, named PTY children, launch failure reporting, exact floating placement, numeric layers, and a fixed-size headless host. Added lifecycle and layer tests. Changed the blank desktop logo to `compo`.
+
 ## 10/22/2026
 
 - Added the first persistent control-protocol slice: private per-instance Unix sockets, version negotiation, ping, bounded nonblocking multi-client I/O, child socket discovery, and normal-exit cleanup. Added protocol and real-PTY connection regressions. Window control remains the next development stage.

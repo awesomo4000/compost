@@ -11,6 +11,7 @@ pub const Kind = union(enum) {
 pub const Options = struct {
     kind: Kind,
     always_on_top: bool = false,
+    layer: i32 = 0,
     min_width: i32 = 0,
     min_height: i32 = 0,
 };
@@ -65,6 +66,7 @@ pub const Scene = struct {
         unreachable; // A full binary tree has at most 2 * capacity - 1 nodes.
     }
     fn validate(options: Options) !void {
+        if (options.layer != 0 and options.kind != .floating) return error.InvalidLayer;
         if (options.min_width < 0 or options.min_height < 0) return error.InvalidBounds;
         switch (options.kind) {
             .floating => |r| _ = try Rect.init(r.x, r.y, r.w, r.h),
@@ -302,7 +304,18 @@ pub const Scene = struct {
         self.next_order += 1;
         self.revision += 1;
     }
+    pub fn lower(self: *Scene, id: Id) !void {
+        const target = try self.window(id);
+        // Preserve all other relative orders while moving the target to the back.
+        for (&self.windows) |*maybe| if (maybe.*) |*w| {
+            w.order += 1;
+        };
+        target.order = 0;
+        self.next_order += 1;
+        self.revision += 1;
+    }
     fn above(a: Window, b: Window) bool {
+        if (a.options.layer != b.options.layer) return a.options.layer > b.options.layer;
         if (a.options.always_on_top != b.options.always_on_top) return a.options.always_on_top;
         return a.order > b.order;
     }
