@@ -117,6 +117,26 @@ pub const Surface = struct {
         return true;
     }
 
+    pub fn selectAt(self: *Surface, x: u16, y: u16, extend: bool) !void {
+        const screen = self.terminal.screens.active;
+        const pin = screen.pages.pin(.{ .viewport = .{ .x = x, .y = y } }) orelse return;
+        const start = if (extend) (if (screen.selection) |sel| sel.start() else pin) else pin;
+        try screen.select(vt.Selection.init(start, pin, false));
+        self.revision +%= 1;
+    }
+
+    pub fn clearSelection(self: *Surface) void {
+        if (self.terminal.screens.active.selection == null) return;
+        self.terminal.screens.active.clearSelection();
+        self.revision +%= 1;
+    }
+
+    pub fn selectionText(self: *Surface, a: std.mem.Allocator) !?[:0]const u8 {
+        const screen = self.terminal.screens.active;
+        const selection = screen.selection orelse return null;
+        return try screen.selectionString(a, .{ .sel = selection, .trim = false });
+    }
+
     pub fn plainText(self: *Surface, allocator: std.mem.Allocator) ![]const u8 {
         return self.terminal.plainString(allocator);
     }

@@ -2,6 +2,8 @@
 
 ## 10/27/2026
 
+- Added pane-local drag selection and explicit Ctrl-] y copy through the outer terminal clipboard using OSC 52, including over SSH where supported. Ctrl-] c enables selection for mouse-aware apps. Keep application clipboard effects disabled and preserve normal bracketed paste.
+
 - Added muted teal inactive terminal cursor highlights. Cursor-only output moves the marker and restores the old cell; focus and cursor visibility changes remove it. Preserve underlying text and clip markers behind other windows.
 
 ## 10/23/2026

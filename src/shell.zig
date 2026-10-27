@@ -34,7 +34,7 @@ fn flushDiagnostics() void {
     if (diagnostic_overflow) std.log.warn("additional terminal diagnostics omitted", .{});
 }
 const host = @import("host.zig");
-const Slot = struct { name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
+const Slot = struct { selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
     var result: [host.capacity]Slot = undefined;
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true, .inactive_cursor = true } };
@@ -42,6 +42,7 @@ var slots: [host.capacity]Slot = init: {
 };
 const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, split: ?usize = null, free_move: bool = false, started: bool = false };
 var drag: ?Drag = null;
+var selection_drag: ?core.Id = null;
 var drag_original: ?core.Scene = null;
 var drag_dock_extent: ?i32 = null;
 var destination: ?docking.Destination = null;
@@ -97,6 +98,10 @@ fn focused() ?*Slot {
 }
 fn focus(id: core.Id) !void {
     if (scene.focus == id) return;
+    if (selection_drag != null) {
+        selection_drag = null;
+        scene.releasePointer();
+    }
     if (scene.get(id).?.options.kind == .floating) float_return_focus = scene.focus;
     if (focused()) |slot| if (slot.surface.?.terminal.modes.get(.focus_event)) try write(slot, "\x1b[O");
     try scene.setFocus(id);
@@ -147,6 +152,7 @@ fn resize(cols: u16, rows: u16, cw: u16, ch: u16, requested_count: c_int) !void 
     } else {
         try cancelDrag();
         border_capture = false;
+        selection_drag = null;
         scene.releasePointer();
         try scene.resizeRoot(root);
         if (count >= 2 and slots[0].surface != null and slots[1].surface != null and scene.get(slots[0].id).?.options.kind == .docked)
@@ -213,6 +219,33 @@ fn newShell() !void {
 fn event(_: *anyopaque, value: input.Event) !void {
     switch (value) {
         .new_shell => try newShell(),
+        .select_mode => if (focused()) |slot| {
+            selection_drag = null;
+            scene.releasePointer();
+            slot.selecting = !slot.selecting;
+            slot.surface.?.clearSelection();
+        },
+        .copy_selection => if (focused()) |slot| {
+            if (try slot.surface.?.selectionText(allocator)) |text| {
+                defer allocator.free(text);
+                // Only this explicit user command may write the outer clipboard.
+                // Child OSC 52 effects remain disabled in the VT handler.
+                if (text.len > 1024 * 1024) {
+                    try display("\x07");
+                    return;
+                }
+                const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(text.len));
+                defer allocator.free(encoded);
+                _ = std.base64.standard.Encoder.encode(encoded, text);
+                try display("\x1b]52;c;");
+                try display(encoded);
+                try display("\x1b\\");
+                slot.surface.?.clearSelection();
+                slot.selecting = false;
+                selection_drag = null;
+                scene.releasePointer();
+            }
+        },
         .quit => host.quit(),
         .toggle_focus => {
             const start: usize = if (focused()) |slot| @intCast(slot.index) else 0;
@@ -254,6 +287,16 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 return;
             }
             if (focused()) |slot| {
+                if (selection_drag != null) {
+                    selection_drag = null;
+                    scene.releasePointer();
+                }
+                const had_selection = slot.selecting or slot.surface.?.terminal.screens.active.selection != null;
+                slot.surface.?.clearSelection();
+                slot.selecting = false;
+                selection_drag = null;
+                scene.releasePointer();
+                if (had_selection and std.mem.eql(u8, bytes, "\x1b") and !decoder.pasting) return;
                 if ((std.mem.eql(u8, bytes, "\x1b[200~") or std.mem.eql(u8, bytes, "\x1b[201~")) and !slot.surface.?.terminal.modes.get(.bracketed_paste)) return;
                 try write(slot, bytes);
             }
@@ -262,6 +305,21 @@ fn event(_: *anyopaque, value: input.Event) !void {
             if (slot.surface.?.terminal.modes.get(.focus_event)) try write(slot, if (is_focused) "\x1b[I" else "\x1b[O");
         },
         .mouse => |mouse| {
+            if (selection_drag) |id| {
+                for (&slots) |*slot| if (slot.surface != null and slot.id == id) {
+                    const inner = decoration.contentFor(&scene, id);
+                    if (!inner.empty() and (mouse.release or mouse.button & 32 != 0)) {
+                        const x = std.math.clamp(@as(i32, mouse.x) - inner.x, 0, inner.w - 1);
+                        const y = std.math.clamp(@as(i32, mouse.y) - inner.y, 0, inner.h - 1);
+                        try slot.surface.?.selectAt(@intCast(x), @intCast(y), true);
+                    }
+                };
+                if (mouse.release) {
+                    selection_drag = null;
+                    scene.releasePointer();
+                }
+                return;
+            }
             const hit = scene.hitTest(mouse.x, mouse.y);
             const edge = if (hit) |id| decoration.edgeAt(&scene, id, mouse.x, mouse.y) else null;
             if (hover_id != hit or hover_edge != edge) {
@@ -352,6 +410,15 @@ fn event(_: *anyopaque, value: input.Event) !void {
                     border_capture = true;
                     return;
                 }
+                if (mouse.button == 0) for (&slots) |*slot| if (slot.surface != null and slot.id == target) {
+                    const modes = slot.surface.?.terminal.modes;
+                    if (slot.selecting or (!modes.get(.mouse_event_normal) and !modes.get(.mouse_event_button) and !modes.get(.mouse_event_any))) {
+                        try slot.surface.?.selectAt(@intCast(@as(i32, mouse.x) - inner.x), @intCast(@as(i32, mouse.y) - inner.y), false);
+                        selection_drag = target;
+                        try scene.capturePointer(target);
+                        return;
+                    }
+                };
                 try scene.capturePointer(target);
             }
             defer if (mouse.release) scene.releasePointer();
@@ -522,6 +589,8 @@ pub fn compositor_exit(index: c_int) c_int {
     clearImages(slot);
     slot.surface.?.destroy();
     slot.surface = null;
+    slot.selecting = false;
+    if (selection_drag == slot.id) selection_drag = null;
     if (slot.name) |name| allocator.free(name);
     if (slot.command) |command| allocator.free(command);
     slot.name = null;
