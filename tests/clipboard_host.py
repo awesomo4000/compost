@@ -19,6 +19,9 @@ os.write(1, b'\x1b]52;c;dW53YW50ZWQ=\x1b\\\x1b]52;c;?\x1b\\')
 os.write(1, 'alpha世界 e\u0301\r\nsecond\x1b[3;1HREADY'.encode())
 while True:
  data = os.read(0, 4096)
+ if data == b'?':
+  os.write(1, b'CLICK-CHECKED')
+  continue
  with path.open('ab') as f: f.write(data)
  if data == b'm': os.write(1, b'\x1b[?1000h\x1b[?1006hMOUSE')
  if data == b'p': os.write(1, b'\x1b[?2004hPASTE')
@@ -34,6 +37,12 @@ with tempfile.TemporaryDirectory(prefix='compo-clipboard-', dir='/tmp') as direc
         host.until(lambda: b'READY' in host.text())
         assert b'\x1b]52' not in host.data
         assert not log.exists()
+        host.data.clear()
+        # A focus click, even with a same-cell motion report, is not a selection.
+        os.write(host.master, b'\x1b[<0;20;8M\x1b[<32;20;8M\x1b[<0;20;8m\x1dy?')
+        host.until(lambda: b'CLICK-CHECKED' in host.text())
+        assert copies() == [], 'plain click left a copyable one-cell selection'
+        assert b'\x1b[7m' not in host.data, 'plain click painted a selection highlight'
         select()
         os.write(host.master, b'\x1dy')
         host.until(lambda: copies() == [b'alpha'])

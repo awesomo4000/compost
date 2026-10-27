@@ -42,8 +42,8 @@ no layout or terminal-emulation logic. Native Windows hosting remains future wor
 
 ## Copy and paste
 
-Drag with the left mouse button inside a shell to select text from that terminal
-only. Selection respects wide characters and combining marks; copied soft wraps
+Click inside a shell to focus it without selecting. Drag to another cell with
+the left mouse button to select text from that terminal only. Selection respects wide characters and combining marks; copied soft wraps
 are joined. Ctrl-] y copies the selection to the outer terminal clipboard through
 OSC 52, then clears the highlight. Escape cancels a selection. Ordinary typing
 also clears it before going to the child.

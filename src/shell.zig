@@ -42,7 +42,7 @@ var slots: [host.capacity]Slot = init: {
 };
 const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, split: ?usize = null, free_move: bool = false, started: bool = false };
 var drag: ?Drag = null;
-var selection_drag: ?core.Id = null;
+var selection_drag: ?struct { id: core.Id, x: u16, y: u16, started: bool = false } = null;
 var drag_original: ?core.Scene = null;
 var drag_dock_extent: ?i32 = null;
 var destination: ?docking.Destination = null;
@@ -305,13 +305,17 @@ fn event(_: *anyopaque, value: input.Event) !void {
             if (slot.surface.?.terminal.modes.get(.focus_event)) try write(slot, if (is_focused) "\x1b[I" else "\x1b[O");
         },
         .mouse => |mouse| {
-            if (selection_drag) |id| {
-                for (&slots) |*slot| if (slot.surface != null and slot.id == id) {
-                    const inner = decoration.contentFor(&scene, id);
+            if (selection_drag) |*selection| {
+                for (&slots) |*slot| if (slot.surface != null and slot.id == selection.id) {
+                    const inner = decoration.contentFor(&scene, selection.id);
                     if (!inner.empty() and (mouse.release or mouse.button & 32 != 0)) {
                         const x = std.math.clamp(@as(i32, mouse.x) - inner.x, 0, inner.w - 1);
                         const y = std.math.clamp(@as(i32, mouse.y) - inner.y, 0, inner.h - 1);
-                        try slot.surface.?.selectAt(@intCast(x), @intCast(y), true);
+                        if (!selection.started and (x != selection.x or y != selection.y)) {
+                            try slot.surface.?.selectAt(selection.x, selection.y, false);
+                            selection.started = true;
+                        }
+                        if (selection.started) try slot.surface.?.selectAt(@intCast(x), @intCast(y), true);
                     }
                 };
                 if (mouse.release) {
@@ -413,8 +417,8 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 if (mouse.button == 0) for (&slots) |*slot| if (slot.surface != null and slot.id == target) {
                     const modes = slot.surface.?.terminal.modes;
                     if (slot.selecting or (!modes.get(.mouse_event_normal) and !modes.get(.mouse_event_button) and !modes.get(.mouse_event_any))) {
-                        try slot.surface.?.selectAt(@intCast(@as(i32, mouse.x) - inner.x), @intCast(@as(i32, mouse.y) - inner.y), false);
-                        selection_drag = target;
+                        slot.surface.?.clearSelection();
+                        selection_drag = .{ .id = target, .x = @intCast(@as(i32, mouse.x) - inner.x), .y = @intCast(@as(i32, mouse.y) - inner.y) };
                         try scene.capturePointer(target);
                         return;
                     }
@@ -590,7 +594,9 @@ pub fn compositor_exit(index: c_int) c_int {
     slot.surface.?.destroy();
     slot.surface = null;
     slot.selecting = false;
-    if (selection_drag == slot.id) selection_drag = null;
+    if (selection_drag) |selection| if (selection.id == slot.id) {
+        selection_drag = null;
+    };
     if (slot.name) |name| allocator.free(name);
     if (slot.command) |command| allocator.free(command);
     slot.name = null;
