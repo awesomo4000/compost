@@ -35,9 +35,14 @@ pub const Surface = struct {
     sink: Sink,
     size: Size,
     revision: u64 = 0,
+    viewport_revision: u64 = 0,
     output_error: ?anyerror = null,
 
     pub fn create(io: std.Io, allocator: std.mem.Allocator, size: Size, sink: Sink) !*Surface {
+        return createWithHistory(io, allocator, size, sink, 0);
+    }
+
+    pub fn createWithHistory(io: std.Io, allocator: std.mem.Allocator, size: Size, sink: Sink, limit: usize) !*Surface {
         try validate(size);
         // This host is single-threaded; initialize the library-wide decoder before feeding.
         vt.sys.decode_png = decodePng;
@@ -48,7 +53,7 @@ pub const Surface = struct {
             .terminal = try vt.Terminal.init(io, allocator, .{
                 .cols = size.columns,
                 .rows = size.rows,
-                .max_scrollback_bytes = 0,
+                .max_scrollback_bytes = limit,
                 .kitty_image_storage_limit = 16 * 1024 * 1024,
             }),
             .stream = undefined,
@@ -115,6 +120,12 @@ pub const Surface = struct {
         self.revision +%= 1;
         if (self.output_error) |err| return err;
         return true;
+    }
+
+    pub fn scroll(self: *Surface, behavior: vt.Terminal.ScrollViewport) void {
+        self.terminal.scrollViewport(behavior);
+        self.viewport_revision +%= 1;
+        self.revision +%= 1;
     }
 
     pub fn plainText(self: *Surface, allocator: std.mem.Allocator) ![]const u8 {

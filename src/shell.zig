@@ -34,7 +34,7 @@ fn flushDiagnostics() void {
     if (diagnostic_overflow) std.log.warn("additional terminal diagnostics omitted", .{});
 }
 const host = @import("host.zig");
-const Slot = struct { name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
+const Slot = struct { browsing: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
     var result: [host.capacity]Slot = undefined;
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true, .inactive_cursor = true } };
@@ -135,12 +135,12 @@ fn resize(cols: u16, rows: u16, cw: u16, ch: u16, requested_count: c_int) !void 
             else
                 .{ .kind = .tiled });
             const bounds = decoration.contentFor(&scene, slot.id);
-            slot.surface = try terminal.Surface.create(io, allocator, .{
+            slot.surface = try terminal.Surface.createWithHistory(io, allocator, .{
                 .columns = @intCast(@max(1, bounds.w)),
                 .rows = @intCast(@max(1, bounds.h)),
                 .cell_width = pixel_width,
                 .cell_height = pixel_height,
-            }, .{ .context = slot, .write = write });
+            }, .{ .context = slot, .write = write }, 8 * 1024 * 1024);
             if (host.setSize(slot.index, slot.surface.?.size.columns, slot.surface.?.size.rows, pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
         }
         if (count != 0) try scene.setFocus(slots[if (count == 1) 0 else 1].id);
@@ -201,7 +201,7 @@ fn newShell() !void {
     slot.renderer.invalidate(allocator);
     slot.floating_bounds = null;
     slot.drawn_revision = null;
-    slot.surface = try terminal.Surface.create(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write });
+    slot.surface = try terminal.Surface.createWithHistory(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write }, 8 * 1024 * 1024);
     errdefer {
         slot.surface.?.destroy();
         slot.surface = null;
@@ -213,6 +213,10 @@ fn newShell() !void {
 fn event(_: *anyopaque, value: input.Event) !void {
     switch (value) {
         .new_shell => try newShell(),
+        .scrollback => if (focused()) |slot| {
+            slot.browsing = !slot.browsing;
+            slot.surface.?.scroll(if (slot.browsing) .{ .delta = -@as(isize, slot.surface.?.size.rows) } else .bottom);
+        },
         .quit => host.quit(),
         .toggle_focus => {
             const start: usize = if (focused()) |slot| @intCast(slot.index) else 0;
@@ -254,6 +258,28 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 return;
             }
             if (focused()) |slot| {
+                if (!decoder.pasting and (std.mem.eql(u8, bytes, "\x1b[5;2~") or std.mem.eql(u8, bytes, "\x1b[6;2~"))) {
+                    const amount: isize = slot.surface.?.size.rows;
+                    slot.surface.?.scroll(.{ .delta = if (bytes[2] == '5') -amount else amount });
+                    return;
+                }
+                if (slot.browsing) {
+                    if (decoder.pasting) return;
+                    if (bytes.len > 1 and bytes[0] != 0x1b) {
+                        for (bytes) |byte| {
+                            if (!slot.browsing) break;
+                            try event(&input_context, .{ .bytes = &.{byte} });
+                        }
+                        return;
+                    }
+                    const s = slot.surface.?;
+                    if (std.mem.eql(u8, bytes, "\x1b") or std.mem.eql(u8, bytes, "q")) {
+                        slot.browsing = false;
+                        s.scroll(.bottom);
+                    } else if (std.mem.eql(u8, bytes, "k") or std.mem.eql(u8, bytes, "\x1b[A")) s.scroll(.{ .delta = -1 }) else if (std.mem.eql(u8, bytes, "j") or std.mem.eql(u8, bytes, "\x1b[B")) s.scroll(.{ .delta = 1 }) else if (std.mem.eql(u8, bytes, "\x1b[5~")) s.scroll(.{ .delta = -@as(isize, s.size.rows) }) else if (std.mem.eql(u8, bytes, "\x1b[6~")) s.scroll(.{ .delta = s.size.rows }) else if (std.mem.eql(u8, bytes, "g")) s.scroll(.top) else if (std.mem.eql(u8, bytes, "G")) s.scroll(.bottom);
+                    return;
+                }
+                if (!slot.surface.?.terminal.screens.active.viewportIsBottom()) slot.surface.?.scroll(.bottom);
                 if ((std.mem.eql(u8, bytes, "\x1b[200~") or std.mem.eql(u8, bytes, "\x1b[201~")) and !slot.surface.?.terminal.modes.get(.bracketed_paste)) return;
                 try write(slot, bytes);
             }
@@ -361,6 +387,14 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 const normal = s.terminal.modes.get(.mouse_event_normal);
                 const button = s.terminal.modes.get(.mouse_event_button);
                 const any = s.terminal.modes.get(.mouse_event_any);
+                if (!mouse.release and mouse.button & 64 != 0 and mouse.button & 3 < 2 and
+                    decoration.contentFor(&scene, target).contains(mouse.x, mouse.y) and
+                    (slot.browsing or (!normal and !button and !any)))
+                {
+                    s.scroll(.{ .delta = if (mouse.button & 1 == 0) -3 else 3 });
+                    return;
+                }
+                if (slot.browsing or !s.terminal.screens.active.viewportIsBottom()) return;
                 if (!normal and !button and !any) return;
                 if (mouse.button & 32 != 0 and !any and !(button and scene.capture != null)) return;
                 const bounds = decoration.contentFor(&scene, target);
@@ -522,6 +556,7 @@ pub fn compositor_exit(index: c_int) c_int {
     clearImages(slot);
     slot.surface.?.destroy();
     slot.surface = null;
+    slot.browsing = false;
     if (slot.name) |name| allocator.free(name);
     if (slot.command) |command| allocator.free(command);
     slot.name = null;
@@ -712,7 +747,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         const command = try allocator.dupe(u8, argv[0]);
         errdefer allocator.free(command);
         const bounds = decoration.contentFor(&candidate, id);
-        const s = try terminal.Surface.create(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write });
+        const s = try terminal.Surface.createWithHistory(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write }, 8 * 1024 * 1024);
         errdefer s.destroy();
         if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
         try host.spawnCommand(@intCast(slot.index), argv, req.cwd, req.env);

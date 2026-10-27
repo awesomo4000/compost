@@ -36,6 +36,7 @@ pub const Renderer = struct {
     generation: u64 = 0,
     image_dirty: ?u64 = null,
     image_scene: ?u64 = null,
+    image_viewport: ?u64 = null,
     next_image: u32 = 1,
     image_stride: u32 = 1,
     framed: bool = true,
@@ -189,10 +190,11 @@ pub const Renderer = struct {
         self.previous_cursor = marker;
         try w.writeAll("\x1b[0m");
         const storage = &surface.terminal.screens.active.kitty_images;
-        if (self.image_dirty != storage.dirty or self.generation != storage.generation or self.image_scene != scene.revision) {
+        if (self.image_dirty != storage.dirty or self.generation != storage.generation or self.image_scene != scene.revision or self.image_viewport != surface.viewport_revision) {
             try self.drawImages(allocator, w, surface, bounds, region.items);
             self.image_dirty = storage.dirty;
             self.image_scene = scene.revision;
+            self.image_viewport = surface.viewport_revision;
         }
         // Standalone rendering owns input modes; an embedded renderer leaves them to its host.
         if (self.framed and scene.focus == id) {
