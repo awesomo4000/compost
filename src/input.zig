@@ -1,7 +1,7 @@
 //! Incremental outer-terminal input framing, independent of PTYs and window policy.
 const std = @import("std");
 pub const Mouse = struct { button: u16, x: u16, y: u16, release: bool };
-pub const Event = union(enum) { bytes: []const u8, mouse: Mouse, toggle_focus, toggle_float, new_shell, scrollback, quit, focus: bool };
+pub const Event = union(enum) { bytes: []const u8, mouse: Mouse, toggle_focus, toggle_float, new_shell, scrollback, select_mode, copy_selection, quit, focus: bool };
 pub const Sink = struct { context: *anyopaque, emit: *const fn (*anyopaque, Event) anyerror!void };
 pub const Decoder = struct {
     pending: [128]u8 = undefined,
@@ -60,6 +60,14 @@ pub const Decoder = struct {
                     try sink.emit(sink.context, .scrollback);
                     continue;
                 }
+                if (byte == 'c') {
+                    try sink.emit(sink.context, .select_mode);
+                    continue;
+                }
+                if (byte == 'y') {
+                    try sink.emit(sink.context, .copy_selection);
+                    continue;
+                }
                 if (byte == 'q') {
                     try sink.emit(sink.context, .quit);
                     continue;
@@ -113,7 +121,7 @@ test "fragmented mouse, focus shortcut, paste, and Escape framing" {
                 .bytes => |bytes| try self.bytes.appendSlice(std.testing.allocator, bytes),
                 .mouse => |mouse| self.mouse = mouse,
                 .toggle_focus => self.toggles += 1,
-                .focus, .toggle_float, .new_shell, .scrollback, .quit => {},
+                .focus, .toggle_float, .new_shell, .scrollback, .select_mode, .copy_selection, .quit => {},
             }
         }
     };

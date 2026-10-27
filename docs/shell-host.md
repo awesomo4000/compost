@@ -58,6 +58,31 @@ by compo and wheel events browse history even when the child owns the mouse.
 New process output does not pull a scrolled viewport back to the bottom. History
 remains subject to the byte limit and is discarded with its window.
 
+## Copy and paste
+
+Click inside a shell to focus it without selecting. Drag to another cell with
+the left mouse button to select text from that terminal only. Selection respects wide characters and combining marks; copied soft wraps
+are joined. Ctrl-] y copies the selection to the outer terminal clipboard through
+OSC 52, then clears the highlight. Escape cancels a selection. Ordinary typing
+also clears it before going to the child.
+
+Mouse-aware applications keep their normal mouse events. To select their text,
+focus the window and press Ctrl-] c, then drag and copy with Ctrl-] y. Ctrl-] c
+again or Escape cancels this selection mode. Borders still move/resize windows;
+selection drags clamp at the terminal content edges rather than spanning windows.
+
+Use the outer terminal's normal paste command, such as Command-V on macOS.
+Compo sends it to the focused child and preserves bracketed-paste boundaries when
+that child requests them. It never reads the system clipboard itself. Copy works
+over SSH when the outer terminal supports and permits OSC 52 writes; terminal
+settings or intermediate multiplexers can block it. Compo cannot confirm that the
+terminal accepted the write. Copies larger than 1 MiB ring the bell and are not
+sent. No clipboard polling, query requests, or automatic child OSC 52 forwarding
+is enabled. Clipboard writes happen only on the explicit copy shortcut.
+
+Selection also works on the visible scrollback viewport. Selection autoscroll,
+word/line gestures, rectangular selections, and clipboard readback are not included.
+
 ## Display and input
 
 Unfocused terminals show a muted teal cell highlight at their retained cursor position

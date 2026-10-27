@@ -145,6 +145,11 @@ pub const Renderer = struct {
                     style.fg_color = .{ .rgb = blend(resolveColor(style.fg_color, fg, self.state.colors.palette), tint) };
                     if (style.underline_color != .none) style.underline_color = .{ .rgb = blend(resolveColor(style.underline_color, fg, self.state.colors.palette), tint) };
                 };
+                if (self.state.row_data.items(.selection)[row_index]) |selected| {
+                    if (x <= selected[1] and x + width > selected[0]) {
+                        style.flags.inverse = !style.flags.inverse;
+                    }
+                }
                 if (marker) |p| if (p.y == y and p.x >= x and p.x < x + width) {
                     // Tint the displayed background, including inverse-video cells.
                     // Keep the glyph and retained VT attributes untouched.
@@ -659,4 +664,34 @@ test "inactive cursor follows cursor-only output and restores cells on hide and 
     const actual_visual = try visualText(a, actual);
     defer a.free(actual_visual);
     try std.testing.expectEqualStrings(original_visual, actual_visual);
+}
+
+test "selection preserves wide graphemes and soft wraps and restores highlighting" {
+    const a = std.testing.allocator;
+    var context: u8 = 0;
+    const source = try terminal.Surface.create(std.testing.io, a, .{ .columns = 8, .rows = 3 }, .{ .context = &context, .write = discard });
+    defer source.destroy();
+    try source.feed("ab世界e\xcc\x81Zxy");
+    try source.selectAt(2, 0, false);
+    try source.selectAt(1, 1, true);
+    const text = (try source.selectionText(a)).?;
+    defer a.free(text);
+    try std.testing.expectEqualStrings("世界e\xcc\x81Zxy", text);
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 8, 3));
+    const id = try scene.add(.{ .kind = .tiled });
+    var renderer: Renderer = .{ .framed = false };
+    defer renderer.deinit(a);
+    const selected = try renderer.draw(a, &scene, id, source);
+    try std.testing.expect(std.mem.indexOf(u8, selected, "\x1b[7m") != null);
+    // Reversing the drag selects exactly the same logical text.
+    try source.selectAt(1, 1, false);
+    try source.selectAt(2, 0, true);
+    const reverse = (try source.selectionText(a)).?;
+    defer a.free(reverse);
+    try std.testing.expectEqualStrings(text, reverse);
+    source.clearSelection();
+    const cleared = try renderer.draw(a, &scene, id, source);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "世界") != null);
+    try std.testing.expect(std.mem.indexOf(u8, cleared, "\x1b[7m") == null);
+    try std.testing.expect((try source.selectionText(a)) == null);
 }
