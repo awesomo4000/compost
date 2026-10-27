@@ -37,7 +37,7 @@ const host = @import("host.zig");
 const Slot = struct { name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
     var result: [host.capacity]Slot = undefined;
-    for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true } };
+    for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true, .inactive_cursor = true } };
     break :init result;
 };
 const Drag = struct { id: core.Id, x: i32, y: i32, bounds: core.Rect, edge: decoration.Edge, split: ?usize = null, free_move: bool = false, started: bool = false };
@@ -454,7 +454,7 @@ fn draw() !void {
             // Preview scenes and cancelled layouts can reuse a revision number.
             slot.renderer.region_scene = null;
         }
-        if (!layout_dirty and slot.drawn_revision == s.revision) continue;
+        if (!layout_dirty and drawn_scene == scene.revision and slot.drawn_revision == s.revision) continue;
         slot.renderer.tint = if (preview) |rect| .{ .bounds = rect } else null;
         const frame = try slot.renderer.draw(allocator, &render_scene, slot.id, s);
         try display(frame);
@@ -528,7 +528,7 @@ pub fn compositor_exit(index: c_int) c_int {
     slot.command = null;
     const next_image = slot.renderer.next_image;
     slot.renderer.deinit(allocator);
-    slot.renderer = .{ .next_image = next_image, .image_stride = host.capacity, .framed = false, .bordered = true };
+    slot.renderer = .{ .next_image = next_image, .image_stride = host.capacity, .framed = false, .bordered = true, .inactive_cursor = true };
     slot.drawn_revision = null;
     scene.remove(slot.id) catch |err| {
         failure = err;

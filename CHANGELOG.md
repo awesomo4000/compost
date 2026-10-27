@@ -1,5 +1,9 @@
 # Changelog
 
+## 10/27/2026
+
+- Added muted teal inactive terminal cursor highlights. Cursor-only output moves the marker and restores the old cell; focus and cursor visibility changes remove it. Preserve underlying text and clip markers behind other windows.
+
 ## 10/23/2026
 
 - Fixed floats being constrained by sidebar reservations. Alt-Control-left-drag now moves without docking or resizing, and Ctrl-] Tab raises and redraws the selected window within its layer. Border resizing remains available.

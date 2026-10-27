@@ -25,7 +25,10 @@ fn resolveColor(value: vt.Style.Color, fallback: vt.color.RGB, palette: vt.color
 }
 
 /// Row-diff renderer. Owns outer image IDs, never forwards APC bytes.
+const CursorCell = struct { x: usize, y: usize };
 pub const Renderer = struct {
+    inactive_cursor: bool = false,
+    previous_cursor: ?CursorCell = null,
     tint: ?Tint = null,
     previous_tint: ?Tint = null,
     state: vt.RenderState = .empty,
@@ -92,13 +95,20 @@ pub const Renderer = struct {
         output.clearRetainingCapacity();
         const w = &output.writer;
         if (self.framed) try w.writeAll("\x1b[?2026h\x1b[?25l\x1b[?7l");
+        var marker: ?CursorCell = null;
+        if (self.inactive_cursor and scene.focus != id and self.state.cursor.visible) {
+            if (self.state.cursor.viewport) |position| marker = .{ .x = position.x, .y = @intCast(position.y) };
+        }
+        const cursor_changed = !std.meta.eql(marker, self.previous_cursor);
         const range = self.state.rowDataRange();
         if (self.row_output == null) self.row_output = .init(allocator);
         const row_output = &self.row_output.?;
         try self.row_ids.ensureTotalCapacity(allocator, range.end - range.start);
         for (range.start..range.end, 0..) |row_index, y| {
             const row_id = self.state.row_data.get(row_index).id();
-            if (self.text_scene == scene.revision and y < self.row_ids.items.len and
+            const cursor_row = cursor_changed and
+                ((if (marker) |p| p.y == y else false) or (if (self.previous_cursor) |p| p.y == y else false));
+            if (!cursor_row and self.text_scene == scene.revision and y < self.row_ids.items.len and
                 std.meta.eql(self.row_ids.items[y], row_id) and
                 !self.state.row_data.items(.dirty)[row_index]) continue;
             row_output.clearRetainingCapacity();
@@ -134,6 +144,14 @@ pub const Renderer = struct {
                     style.fg_color = .{ .rgb = blend(resolveColor(style.fg_color, fg, self.state.colors.palette), tint) };
                     if (style.underline_color != .none) style.underline_color = .{ .rgb = blend(resolveColor(style.underline_color, fg, self.state.colors.palette), tint) };
                 };
+                if (marker) |p| if (p.y == y and p.x >= x and p.x < x + width) {
+                    // Tint the displayed background, including inverse-video cells.
+                    // Keep the glyph and retained VT attributes untouched.
+                    const fg = resolveColor(style.fg_color, self.state.colors.foreground, self.state.colors.palette);
+                    const bg = resolveColor(style.bg_color, self.state.colors.background, self.state.colors.palette);
+                    const highlight: Tint = .{ .bounds = bounds, .color = .{ .r = 49, .g = 179, .b = 144 }, .alpha = 160 };
+                    if (style.flags.inverse) style.fg_color = .{ .rgb = blend(fg, highlight) } else style.bg_color = .{ .rgb = blend(bg, highlight) };
+                };
                 if (previous_style == null or !previous_style.?.eql(style)) {
                     try row_writer.writeAll("\x1b[0m");
                     try colors(row_writer, style, null);
@@ -168,6 +186,7 @@ pub const Renderer = struct {
         self.state.dirty = .false;
         self.text_scene = scene.revision;
         self.previous_tint = self.tint;
+        self.previous_cursor = marker;
         try w.writeAll("\x1b[0m");
         const storage = &surface.terminal.screens.active.kitty_images;
         if (self.image_dirty != storage.dirty or self.generation != storage.generation or self.image_scene != scene.revision) {
@@ -579,4 +598,63 @@ test "preview tint preserves Unicode and styles and restores unchanged cells" {
     const after = try destination.plainText(alloc);
     defer alloc.free(after);
     try std.testing.expectEqualStrings(before, after);
+}
+
+test "inactive cursor follows cursor-only output and restores cells on hide and focus" {
+    const a = std.testing.allocator;
+    var context: u8 = 0;
+    const size: terminal.Size = .{ .columns = 12, .rows = 3 };
+    const source = try terminal.Surface.create(std.testing.io, a, size, .{ .context = &context, .write = discard });
+    defer source.destroy();
+    const dest = try terminal.Surface.create(std.testing.io, a, size, .{ .context = &context, .write = discard });
+    defer dest.destroy();
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 12, 3));
+    const id = try scene.add(.{ .kind = .tiled });
+    var renderer: Renderer = .{ .inactive_cursor = true, .framed = false };
+    defer renderer.deinit(a);
+    const Check = struct {
+        fn bg(surface: *terminal.Surface, x: usize, y: usize, expected: vt.color.RGB) !void {
+            var state: vt.RenderState = .empty;
+            defer state.deinit(std.testing.allocator);
+            try state.update(std.testing.allocator, &surface.terminal);
+            const cells = state.row_data.items(.cells)[state.rowDataRange().start + y];
+            const style = cells.items(.style)[x];
+            try std.testing.expectEqual(vt.Style.Color{ .rgb = expected }, style.bg_color);
+        }
+    };
+    try source.feed("\x1b[38;2;200;200;200;48;2;20;20;20mA世界 e\xcc\x81\r\nsecond\x1b[1;1H");
+    try dest.feed(try renderer.draw(a, &scene, id, source));
+    try Check.bg(dest, 0, 0, .{ .r = 38, .g = 120, .b = 98 });
+    try Check.bg(source, 0, 0, .{ .r = 20, .g = 20, .b = 20 });
+    // No text changed. Repaint both the old row and the new cursor row.
+    try source.feed("\x1b[2;4H");
+    try dest.feed(try renderer.draw(a, &scene, id, source));
+    try Check.bg(dest, 0, 0, .{ .r = 20, .g = 20, .b = 20 });
+    try Check.bg(dest, 3, 1, .{ .r = 38, .g = 120, .b = 98 });
+    try source.feed("\x1b[?25l");
+    try dest.feed(try renderer.draw(a, &scene, id, source));
+    try Check.bg(dest, 3, 1, .{ .r = 20, .g = 20, .b = 20 });
+    try source.feed("\x1b[?25h\x1b[1;3H");
+    try dest.feed(try renderer.draw(a, &scene, id, source));
+    // Cursor on the tail of a wide glyph highlights the whole glyph.
+    try Check.bg(dest, 1, 0, .{ .r = 38, .g = 120, .b = 98 });
+    try scene.setFocus(id);
+    try dest.feed(try renderer.draw(a, &scene, id, source));
+    try Check.bg(dest, 1, 0, .{ .r = 20, .g = 20, .b = 20 });
+    const cover = try scene.add(.{ .kind = .{ .floating = scene.root } });
+    try scene.setFocus(cover);
+    const covered = try renderer.draw(a, &scene, id, source);
+    try std.testing.expect(std.mem.indexOf(u8, covered, "48;2;38;120;98") == null);
+    try scene.remove(cover);
+    try dest.feed(try renderer.draw(a, &scene, id, source));
+    try Check.bg(dest, 1, 0, .{ .r = 38, .g = 120, .b = 98 });
+    const original = try source.plainText(a);
+    defer a.free(original);
+    const actual = try dest.plainText(a);
+    defer a.free(actual);
+    const original_visual = try visualText(a, original);
+    defer a.free(original_visual);
+    const actual_visual = try visualText(a, actual);
+    defer a.free(actual_visual);
+    try std.testing.expectEqualStrings(original_visual, actual_visual);
 }

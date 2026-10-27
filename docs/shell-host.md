@@ -42,6 +42,15 @@ no layout or terminal-emulation logic. Native Windows hosting remains future wor
 
 ## Display and input
 
+Unfocused terminals show a muted teal cell highlight at their retained cursor position
+when the application requests a visible cursor. Cursor-only output moves it even
+while another window has keyboard focus. The marker preserves the character and
+styles beneath it, highlights a complete wide glyph, and follows window clipping.
+It disappears when the application hides the cursor or the window gains focus;
+the focused window uses the outer terminal cursor. This is a cell background
+highlight, not a native hollow outline, and it does not tint Kitty image pixels.
+
+
 The renderer projects retained libghostty-vt cells, styles, wide characters,
 combining characters, and cursor state through the window's visible region.
 It uses libghostty-vt row identities and dirty flags to skip unchanged rows,

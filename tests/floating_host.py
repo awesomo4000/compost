@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Move, resize, hide and reveal a third shell over retained background text."""
 import os
+import re
 from pathlib import Path
 import shlex
 import signal
@@ -16,6 +17,10 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-float-', dir='/tmp') as director
         path = root / (label + suffix)
         return path.read_bytes() if path.exists() else b''
     host = Host(command('MAIN'), sidebar=command('DOCK'), floating=command('FLOAT'))
+    def painted():
+        # Cursor markers can add SGR changes within otherwise unchanged text.
+        # Keep cursor positioning while ignoring styling for these layout checks.
+        return re.sub(rb"\x1b\[[0-9:;]*m", b"", bytes(host.data))
     try:
         host.until(lambda: b'FLOAT01' in host.text() and b'MAIN01' in host.text())
         assert b'\x1b[8;40H' in host.data
@@ -27,7 +32,7 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-float-', dir='/tmp') as director
         host.data.clear()
         # Alt-left drag moves without changing the child terminal size.
         os.write(host.master, b'\x1b[<8;40;8M\x1b[<40;46;11M\x1b[<8;46;11m')
-        host.until(lambda: b'\x1b[11;46H\x1b[0mFLOAT01' in host.data)
+        host.until(lambda: b'\x1b[11;46HFLOAT01' in painted())
         assert data('FLOAT', '.sizes') == original_sizes
         assert data('FLOAT', '.input') == b'hello'
         # Alt-right drag resizes the PTY; border handles are the trackpad alternative.
@@ -39,20 +44,20 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-float-', dir='/tmp') as director
         # Control-Alt-left moves freely without changing the PTY size or docking.
         host.data.clear()
         os.write(host.master, b'\x1b[<24;46;11M\x1b[<56;26;1M\x1b[<24;26;1m')
-        host.until(lambda: b'\x1b[2;26H\x1b[0mFLOAT01' in host.data)
+        host.until(lambda: b'\x1b[2;26HFLOAT01' in painted())
         # Hide, restore the uncovered background, and direct typing to a base shell.
         host.data.clear()
         os.write(host.master, b'\x1df')
-        host.until(lambda: b'\x1b[2;25H\x1b[0mMAIN01' in host.data)
+        host.until(lambda: b'\x1b[2;25HMAIN01' in painted())
         host.data.clear()
         os.write(host.master, b'\x1df')
-        host.until(lambda: b'\x1b[2;26H\x1b[0mFLOAT01' in host.data)
+        host.until(lambda: b'\x1b[2;26HFLOAT01' in painted())
         os.write(host.master, b'world')
         host.until(lambda: b'helloworld' in data('FLOAT', '.input'))
         # Closing the float restores the same main shell and leaves the dock intact.
         host.data.clear()
         os.write(host.master, b'!')
-        host.until(lambda: b'\x1b[2;25H\x1b[0mMAIN01' in host.data)
+        host.until(lambda: b'\x1b[2;25HMAIN01' in painted())
         assert data('MAIN', '.sizes') == b'[55, 22]\n'
         host.process.terminate()
         host.finish(128 + signal.SIGTERM)
