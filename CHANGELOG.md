@@ -2,6 +2,8 @@
 
 ## 10/27/2026
 
+- Added bounded per-window scrollback, shell wheel browsing, and Ctrl-] [ history mode using libghostty-vt viewport state. Keep mouse-aware application wheel input intact and return to live output on typing outside history mode.
+
 - Added muted teal inactive terminal cursor highlights. Cursor-only output moves the marker and restores the old cell; focus and cursor visibility changes remove it. Preserve underlying text and clip markers behind other windows.
 
 ## 10/23/2026

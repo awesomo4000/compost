@@ -40,6 +40,24 @@ services; the compositor/host interface uses ordinary Zig functions and slices.
 There is no project-owned C host source or header translation step. It contains
 no layout or terminal-emulation logic. Native Windows hosting remains future work.
 
+## Scrollback
+
+Each hosted terminal retains up to 8 MiB of primary-screen history. Alternate
+screens keep their usual no-history behavior. Wheel events browse history when
+the child has not enabled mouse reporting; tmux and mouse-aware TUIs keep their
+wheel input. Typing returns a wheel-scrolled window to live output before sending
+the input to the child.
+
+Shift+PageUp/PageDown scroll the focused window by a page, including when the
+child owns the mouse.
+
+Ctrl-] [ toggles explicit scrollback mode in the focused window. Use Up/Down or
+k/j, PageUp/PageDown, g for the oldest retained row, and G for live output.
+Escape or q exits and returns to live output. While in this mode, keys are consumed
+by compo and wheel events browse history even when the child owns the mouse.
+New process output does not pull a scrolled viewport back to the bottom. History
+remains subject to the byte limit and is discarded with its window.
+
 ## Display and input
 
 Unfocused terminals show a muted teal cell highlight at their retained cursor position
