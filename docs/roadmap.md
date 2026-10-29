@@ -14,6 +14,13 @@ below remains the eventual target.
   clipping, and restoration into the initial terminal integration.
 - Extend the implemented text-cell preview tint to Kitty image blending and
   general translucent windows. Query outer-terminal default colors for theme matching.
+- Add Ctrl-] , pane selection: show subtle `[1]`, `[2]`, etc. near the middle
+  of each pane's top border, then focus and raise the pane selected by number.
+  Escape cancels and selection removes the labels. Define multi-digit selection
+  for desktops with more than nine panes.
+- Startup layout scripts now run through the control socket using named targets,
+  floats, targeted tiles, and per-window commands. Future layout export can
+  generate these same operations; process persistence remains separate.
 - Keep the host alive through display disconnects and restore drawing and input
   on reattach. Evaluate dtach as an initial transport.
 - Host multiple tmux clients with targeted sidebar controllers and an optional

@@ -124,6 +124,11 @@ pub const Scene = struct {
     /// Place an existing window beside a tile, or beside the whole tree when
     /// target is null. Preserve its ID; failures leave the scene unchanged.
     pub fn placeTile(self: *Scene, id: Id, target: ?Id, edge: Edge) !void {
+        return self.placeTileRatio(id, target, edge, 5000);
+    }
+    /// New window share in basis points. Existing pointer docking stays 50/50.
+    pub fn placeTileRatio(self: *Scene, id: Id, target: ?Id, edge: Edge, ratio: u16) !void {
+        if (ratio == 0 or ratio >= 10000) return error.InvalidSplit;
         var next = self.*;
         _ = try next.window(id);
         if (target == id) return error.InvalidSplit;
@@ -156,7 +161,7 @@ pub const Scene = struct {
                 .axis = if (edge == .left or edge == .right) .horizontal else .vertical,
                 .first = if (before) new_index else old_index,
                 .second = if (before) old_index else new_index,
-                .ratio = 5000,
+                .ratio = if (before) ratio else 10000 - ratio,
             } };
         } else {
             const index = next.freeNode();

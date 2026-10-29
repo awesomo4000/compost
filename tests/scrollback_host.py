@@ -37,6 +37,9 @@ with tempfile.TemporaryDirectory(prefix='compo-scroll-', dir='/tmp') as director
         host.data.clear()
         os.write(host.master, b'g')
         host.until(lambda: b'history-00' in host.text())
+        # Selection and copy use the history viewport after the branch merge.
+        os.write(host.master, b'\x1b[<0;2;2M\x1b[<32;11;2M\x1b[<0;11;2m\x1dy')
+        host.until(lambda: b'\x1b]52;c;aGlzdG9yeS0wMA==\x1b\\' in host.data)
         host.data.clear()
         os.kill(int((root / 'pid').read_text()), signal.SIGUSR1)
         # Ping via input is intentionally consumed in browse mode.

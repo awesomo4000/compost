@@ -17,26 +17,29 @@ BINARY = Path(__file__).resolve().parents[1] / "zig-out/bin/compo"
 
 
 class Host:
-    def __init__(self, command, sidebar=None, floating=None, desktop=False, border_style="plain"):
+    def __init__(self, command, sidebar=None, floating=None, desktop=False, border_style="plain", args=None, env_overrides=None):
         self.master, self.slave = pty.openpty()
         self.resize(24, 80)
         self.original = termios.tcgetattr(self.slave)
         self.data = bytearray()
-        env = dict(os.environ, SHELL="/bin/sh", TMUXPP_COMMAND=command, COMPO_BORDER_STYLE=border_style)
-        env.pop("TMUXPP_DESKTOP", None)
+        env = dict(os.environ, SHELL="/bin/sh", COMPO_COMMAND=command, COMPO_BORDER_STYLE=border_style)
+        env.pop("COMPO_INIT", None)
+        env.pop("COMPO_DESKTOP", None)
         if desktop:
-            env["TMUXPP_DESKTOP"] = "1"
+            env["COMPO_DESKTOP"] = "1"
         if sidebar is None:
-            env["TMUXPP_SINGLE"] = "1"
+            env["COMPO_SINGLE"] = "1"
         else:
-            env.pop("TMUXPP_SINGLE", None)
-            env["TMUXPP_SIDEBAR_COMMAND"] = sidebar
-        env.pop("TMUXPP_FLOAT", None)
-        env.pop("TMUXPP_FLOAT_COMMAND", None)
+            env.pop("COMPO_SINGLE", None)
+            env["COMPO_SIDEBAR_COMMAND"] = sidebar
+        env.pop("COMPO_FLOAT", None)
+        env.pop("COMPO_FLOAT_COMMAND", None)
         if floating is not None:
-            env["TMUXPP_FLOAT"] = "1"
-            env["TMUXPP_FLOAT_COMMAND"] = floating
-        self.process = subprocess.Popen([str(BINARY)], stdin=self.slave,
+            env["COMPO_FLOAT"] = "1"
+            env["COMPO_FLOAT_COMMAND"] = floating
+        if env_overrides:
+            env.update(env_overrides)
+        self.process = subprocess.Popen([str(BINARY), *(args if args is not None else ["--no-init"])], stdin=self.slave,
                                         stdout=self.slave, stderr=self.slave,
                                         env=env, start_new_session=True)
 

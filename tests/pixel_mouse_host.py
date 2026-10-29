@@ -32,9 +32,18 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-pixel-', dir='/tmp') as director
         os.write(host.master, b'\x1b[<35;3;4M\x1b[<0;3;4M\x1b[<0;3;4m\x1b[<64;3;4M')
         host.until(lambda: b'\x1b[<35;13;41M' in data() and b'\x1b[<0;13;41M' in data())
         host.until(lambda: b'\x1b[<0;13;41m\x1b[<64;13;41M' in data())
+        # Observed Ghostty hover arrived as right-button motion without a press.
+        # Normalize it to hover, including modifiers, rather than losing it or
+        # inventing an application drag. Use distinct cells for each assertion.
+        os.write(host.master, b'\x1b[<34;4;5M\x1b[<42;5;6M')
+        host.until(lambda: b'\x1b[<35;21;57M' in data() and b'\x1b[<43;29;73M' in data())
+        assert b'\x1b[<34;' not in data() and b'\x1b[<42;' not in data()
         # Capture crossing the pane boundary clamps to the final content cell.
         os.write(host.master, b'\x1b[<0;3;4M\x1b[<32;50;4M\x1b[<0;50;4m')
         host.until(lambda: b'\x1b[<32;173;41M\x1b[<0;173;41m' in data())
+        # A genuine right-button drag keeps its identity after a matching press.
+        os.write(host.master, b'\x1b[<2;3;4M\x1b[<34;4;5M\x1b[<2;4;5m')
+        host.until(lambda: b'\x1b[<2;13;41M\x1b[<34;21;57M\x1b[<2;21;57m' in data())
         host.process.terminate()
         host.finish(128 + signal.SIGTERM)
     finally:

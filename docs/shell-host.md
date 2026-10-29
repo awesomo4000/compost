@@ -4,6 +4,18 @@
 using `$SHELL` or `/bin/sh`. Up to 32 shells can run. Closing the last shell
 returns to the desktop; Ctrl-] q closes all children and quits.
 
+Use `compo ctl create --tile --command 'your_program'` to create a window through
+the control socket. Each window has its own optional command; after it finishes,
+an interactive shell remains. `--float X,Y,W,H` places a float, and tile edge,
+target, and ratio options build splits. See [the control CLI](control-protocol.md#command-line-client)
+for examples and persistent scripting support.
+
+For an xinitrc-style layout, put a shell script in `~/.config/compo/init.sh` or
+launch `compo --init FILE`. It runs outside the panes, with `COMPO_BIN` and
+`COMPO_SOCKET` set. Name windows with `--name main`, then use `--target main` or
+`ctl focus main`. See [startup scripts](control-protocol.md#startup-scripts) and
+[the example](../examples/init.sh). `--no-init` skips startup scripts.
+
 Option-left-drag moves a float. Option-Control-left-drag moves freely across the
 full screen without docking or resizing. Border handles still resize. Option-dragging a tiled or wall border pulls it
 out after a small movement threshold, restoring its remembered floating size.
@@ -23,13 +35,28 @@ Click focuses a window. Ctrl-] Tab cycles focus and raises the selected window
 within its layer, repainting retained content even when the child is idle. Ctrl-] twice sends a literal Ctrl-].
 The user's tmux prefix passes through. Ctrl-] f toggles a floating window.
 
-`TMUXPP_LEGACY=1` starts the original left dock and main tile. `TMUXPP_SINGLE=1`
-starts a single full-root shell; `TMUXPP_FLOAT=1` adds the third floating shell.
+`COMPO_LEGACY=1` starts the original left dock and main tile. `COMPO_SINGLE=1`
+starts a single full-root shell; `COMPO_FLOAT=1` adds the third floating shell.
 These legacy layouts exit when their children close and return the main shell's
-status. `TMUXPP_COMMAND`, `TMUXPP_SIDEBAR_COMMAND`, and `TMUXPP_FLOAT_COMMAND`
-provide fixture commands. `TMUXPP_DESKTOP=1` forces empty-desktop startup even
-when those variables are set. In desktop mode each new shell uses TMUXPP_COMMAND
+status. `COMPO_COMMAND`, `COMPO_SIDEBAR_COMMAND`, and `COMPO_FLOAT_COMMAND`
+provide fixture commands. `COMPO_DESKTOP=1` forces empty-desktop startup even
+when those variables are set. In desktop mode each new shell uses COMPO_COMMAND
 if provided. Desktop quit returns zero.
+
+To try a startup command that leaves a shell when it finishes, the existing
+launcher accepts this wrapper:
+
+```sh
+COMPO_SINGLE=1 COMPO_COMMAND='/bin/bash -c "your_command_here; exec /bin/bash -i"' ./zig-out/bin/compo
+```
+
+Replace `your_command_here` with the program to launch. The semicolon opens the
+interactive shell even when the program returns a nonzero status. Exiting that
+shell closes the window. The first command runs in noninteractive Bash; aliases
+and functions from interactive startup files are only available in the shell
+opened afterward. An explicit `exit` or `exec` in the first command bypasses the
+handoff. This uses process execution, with no prompt detection or timed input.
+For a complete layout, use a startup script with per-window control commands.
 
 `zig build` installs `zig-out/bin/compo` and both demos.
 
@@ -63,7 +90,14 @@ remains subject to the byte limit and is discarded with its window.
 Click inside a shell to focus it without selecting. Drag to another cell with
 the left mouse button to select text from that terminal only. Selection respects wide characters and combining marks; copied soft wraps
 are joined. Ctrl-] y copies the selection to the outer terminal clipboard through
-OSC 52, then clears the highlight. Escape cancels a selection. Ordinary typing
+OSC 52, then clears the highlight. A muted teal `[ N copied ]` notice appears in
+the top border for two seconds. Completed bracketed pastes show `[ N pasted ]`.
+Counts are Unicode code points, not UTF-8 bytes; combining marks count separately.
+Copy notices confirm that compo sent the clipboard request, not that the outer
+terminal accepted it. Paste notices count bytes successfully sent to the child
+as characters; they do not imply the application has processed the paste.
+Unbracketed input has no paste notice because it cannot be distinguished from
+typing. Labels are omitted if the border is too narrow or obscured. Escape cancels a selection. Ordinary typing
 also clears it before going to the child.
 
 Mouse-aware applications keep their normal mouse events. To select their text,
@@ -112,9 +146,11 @@ hovering a draggable edge brightens it. Shared dividers use the focused
 neighbor's gradient when adjacent to focus. `COMPO_BORDER_STYLE=plain` restores
 the original cyan/gray colors and square corners. Window labels remain pending.
 
-`src/input.zig` incrementally frames outer CSI sequences, SGR mouse reports,
-focus reports, and bracketed paste. A 50 ms timeout forwards a standalone Escape
-even if another shell continuously emits output. The compositor always requests
+`src/input.zig` incrementally frames outer CSI and SS3 key sequences, SGR mouse
+reports, focus reports, and bracketed paste. Application-mode arrows stay intact
+across reads. A 50 ms timeout forwards only a standalone Escape, even if another
+shell continuously emits output; it never flushes a started CSI/SS3 sequence or
+runs ahead of already-readable input. The compositor always requests
 SGR mouse motion and bracketed-paste reports so borders can react to hover. Clicks focus windows; captured drags and
 releases remain with their starting window. Mouse positions become local to
 that window, clamped at its edges during capture. Mouse events reach only children
@@ -152,11 +188,11 @@ and partial-image clipping are not implemented yet. This is not complete Kitty
 protocol conformance. The outer terminal must support Kitty graphics; capability
 probing and non-Kitty fallback are still pending.
 
-The default host has two shells. Set `TMUXPP_FLOAT=1` to start a third shell in
+The default host has two shells. Set `COMPO_FLOAT=1` to start a third shell in
 an opaque floating rectangle, initially centered in the main area. For example:
 
 ```sh
-TMUXPP_FLOAT=1 ./zig-out/bin/compo
+COMPO_FLOAT=1 ./zig-out/bin/compo
 ```
 
 Click the float to focus it; Ctrl-] then Tab cycles visible shells. Ctrl-] then
@@ -176,8 +212,8 @@ Control-Option-left-drag moves it without docking. Shift-Option is not a composi
 since the outer terminal uses it for rectangular selection. On macOS, Alt is
 Option. The outer terminal must forward modified mouse
 events. These gestures are consumed by the compositor; ordinary mouse events
-still go to the child. `TMUXPP_FLOAT_COMMAND` optionally supplies its command.
-`TMUXPP_SINGLE` takes precedence over the floating-shell option.
+still go to the child. `COMPO_FLOAT_COMMAND` optionally supplies its command.
+`COMPO_SINGLE` takes precedence over the floating-shell option.
 
 Docks reserve tile space. Floats can move across the full screen; stacking
 still determines visibility where they overlap an always-on-top dock.
@@ -237,8 +273,24 @@ interception of border gestures, and the shared sidebar/main resize divider.
 Library warnings do not write onto the live composed display. When stderr is a
 terminal, the host buffers up to 16 KiB and prints diagnostics after restoring
 the terminal on exit. Extra diagnostics are dropped with a notice. Redirect
-stderr for immediate logging: `./zig-out/bin/compo 2>/tmp/tmuxpp.log`.
+stderr for immediate logging: `./zig-out/bin/compo 2>/tmp/compo.log`.
 This isolates diagnostics; it does not add support for unimplemented protocols.
+
+Warnings about `CSI > p` and Kitty queries without dimensions can come from
+application capability probes. Those warnings do not disable mouse reporting.
+`COMPO_TRACE_MOUSE=1 ./zig-out/bin/compo 2>/tmp/compo-mouse.log` records button
+events, window routing, mouse modes, and forwarded pane coordinates. It does not
+record keystrokes or terminal contents, and skips hover motion. Without stderr
+redirection, these trace records are also deferred until exit and share the
+bounded diagnostic buffer. This distinguishes missing outer-terminal events
+from events consumed by selection, scrollback, or application mouse routing.
+Motion with a held button but no captured press is normalized to no-button hover
+and logged as an orphan drag. This preserves border highlighting and application
+hover without inventing a drag. Modifiers and drags that start inside a child
+retain their original meaning.
+
+`compo --help` and `compo -h` describe startup and shortcuts without opening a
+terminal. `compo ctl --help` and `compo ctl -h` describe the control client.
 
 Drop previews blend a 25% gray-blue tint into retained cell foreground and
 background colors, preserving text, Unicode graphemes, and style attributes.

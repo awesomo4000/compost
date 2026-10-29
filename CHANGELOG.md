@@ -1,6 +1,26 @@
 # Changelog
 
+## 10/28/2026
+
+- Added xinitrc-style startup scripts, explicit --init/--no-init options, live-name targeting, and quiet control commands. Scripts arrange windows over the ready control socket without a bootstrap pane; failures report bounded diagnostics and clean up the desktop.
+
+- Keep application-mode arrows and other SS3 keys intact across input reads. Limit idle flushing to standalone Escape and check input readiness first, preventing partial keys from exiting tmux copy mode or leaving stray arrow letters. Added fragmented/repeated-key and real-tmux copy-mode regressions.
+
+- Preserve border and application hover when the outer terminal reports held-button motion without a captured press. Normalize these events to no-button hover instead of dropping them; retain modifiers and genuine drag gestures.
+
+- Ignore held-button motion without a captured press so all-motion mouse clients cannot acquire an orphan drag that consumes their next click. Added a real-tmux reproduction for this failure.
+
+- Added main and control-client help flags, opt-in button-routing diagnostics with COMPO_TRACE_MOUSE, and an isolated real-tmux regression for single-click pane switching without clipboard output.
+
+- Added native `compo ctl` window commands and persistent NDJSON streaming. Added tiled placements with target, edge, and ratio; float/tile conversion; neighboring PTY resize; and per-window commands that leave an interactive shell.
+
+- Renamed all legacy startup environment variables to use the COMPO_ prefix. Updated the host, PTY fixtures, and usage examples.
+
+- Documented and tested startup commands that leave an interactive Bash shell using an exec handoff. Recorded startup layout scripts and numbered pane selection with Ctrl-] , on the roadmap.
+
 ## 10/27/2026
+
+- Merged scrollback and copy/paste onto main. Added short-lived muted teal copy/paste character counts in each window top border, including shared dividers. Track bracketed paste across input chunks and keep it targeted at its starting window.
 
 - Added bounded per-window scrollback, shell wheel browsing, and Ctrl-] [ history mode using libghostty-vt viewport state. Keep mouse-aware application wheel input intact and return to live output on typing outside history mode.
 
@@ -54,7 +74,7 @@
 
 - Fixed redraw/focus-report feedback in the two-shell host. Outer input modes now belong to the host; unchanged surfaces, rows, and image placements are skipped, and only layout changes clear the screen. Added a PTY regression for focus feedback and typing without sidebar repainting.
 
-- Added a live left dock and main shell with separate PTYs, Ctrl-] Tab and click focus, per-window mouse coordinates, drag capture, paste isolation, and independent graphics IDs. Closing either shell expands the survivor. Kept TMUXPP_SINGLE=1 for the original layout and added two-shell PTY tests.
+- Added a live left dock and main shell with separate PTYs, Ctrl-] Tab and click focus, per-window mouse coordinates, drag capture, paste isolation, and independent graphics IDs. Closing either shell expands the survivor. Kept COMPO_SINGLE=1 for the original layout and added two-shell PTY tests.
 - Added an interactive full-root POSIX shell host, retained-cell renderer, and basic Kitty image output with independent outer image IDs and upload reuse. Added installed binaries under zig-out/bin, renderer round-trip tests, and disposable-PTY checks for input, resize, child exit, graphics output, and terminal restoration. Interactive multi-window hosting and complete graphics composition remain pending.
 - Integrated the pinned libghostty-vt archive through a content-hashed Zig dependency and added a terminal adapter separate from the geometry core. Added retained screen state, per-surface replies, OSC 7501 callbacks, resize reporting, and raw/chunked PNG Kitty image handling using the bundled Wuffs decoder.
 - Added focused terminal tests and `mise run demo-vt`, a headless replay of text and image output. PTY shell hosting and outer-terminal rendering remain pending.

@@ -45,12 +45,14 @@ with tempfile.TemporaryDirectory(prefix='compo-clipboard-', dir='/tmp') as direc
         assert b'\x1b[7m' not in host.data, 'plain click painted a selection highlight'
         select()
         os.write(host.master, b'\x1dy')
-        host.until(lambda: copies() == [b'alpha'])
+        host.until(lambda: copies() == [b'alpha'] and b'[ 5 copied ]' in host.text())
         assert not log.exists(), 'selection leaked mouse input to the shell'
         os.write(host.master, b'm')
         host.until(lambda: b'MOUSE' in host.text())
         select()
-        host.until(lambda: b'\x1b[<0;1;1M' in log.read_bytes())
+        # Wait for the full click before snapshotting. The child's read can split
+        # press/release across iterations; waiting only for press races the rest.
+        host.until(lambda: b'\x1b[<0;1;1M' in log.read_bytes() and log.read_bytes().endswith(b'\x1b[<0;5;1m'))
         before = log.read_bytes()
         os.write(host.master, b'\x1dc')
         select()
@@ -59,10 +61,18 @@ with tempfile.TemporaryDirectory(prefix='compo-clipboard-', dir='/tmp') as direc
         assert log.read_bytes() == before, 'forced selection leaked to the application'
         os.write(host.master, b'p')
         host.until(lambda: b'PASTE' in host.text())
-        payload = b'\x1b[200~literal\x1dy\nsecond line\x1b[201~'
-        os.write(host.master, payload)
+        body = 'literal\x1dy\nsecond 世界 🟢'.encode()
+        payload = b'\x1b[200~' + body + b'\x1b[201~'
+        # Fragment UTF-8 and the paste delimiters across writes.
+        for byte in payload: os.write(host.master, bytes([byte]))
         host.until(lambda: log.read_bytes().endswith(payload))
         assert copies() == [b'alpha', b'alpha'], 'paste interpreted a compositor copy shortcut'
+        notice = ('[ %d pasted ]' % len(body.decode())).encode()
+        host.until(lambda: notice in host.text())
+        host.data.clear()
+        # The idle timer restores the top border with no further child output.
+        host.until(lambda: b'\x1b[1;' in host.data)
+        assert b' copied ]' not in host.text() and b' pasted ]' not in host.text()
         os.write(host.master, b'!')
         host.finish(0)
     finally:

@@ -4,6 +4,9 @@ const c = std.c;
 const app = @import("root");
 const control = @import("control.zig");
 var control_server: ?control.Server = null;
+pub var startup_script: ?[:0]const u8 = null;
+pub var startup_binary: [:0]const u8 = "";
+var startup_job: ?@import("startup.zig").Job = null;
 // Darwin sys/ttycom.h: _IOW('t', 103, struct winsize).
 // std.c currently exposes only TIOCGWINSZ on Darwin.
 const set_winsize: u32 = if (@import("builtin").target.os.tag == .macos)
@@ -35,7 +38,7 @@ fn signalValue(value: *c_int) *volatile c_int {
 fn onSignal(sig: c.SIG) callconv(.c) void {
     if (sig == .WINCH) signalValue(&resized).* = 1 else signalValue(&stopped).* = @intCast(@backingInt(sig));
 }
-fn milliseconds() u64 {
+pub fn milliseconds() u64 {
     var now: c.timespec = undefined;
     if (c.clock_gettime(.MONOTONIC, &now) != 0) return 0;
     return @as(u64, @intCast(now.sec)) * 1000 + @as(u64, @intCast(now.nsec)) / 1_000_000;
@@ -113,7 +116,7 @@ pub fn spawn(slot: usize, initial: bool) bool {
     if (children[slot] >= 0) return false;
     const env_shell = c.getenv("SHELL");
     const shell: [*:0]const u8 = if (env_shell != null and env_shell.?[0] == '/') env_shell.? else "/bin/sh";
-    const command = c.getenv(if (initial and slot == 0 and count >= 2) "TMUXPP_SIDEBAR_COMMAND" else if (initial and slot == 2) "TMUXPP_FLOAT_COMMAND" else "TMUXPP_COMMAND");
+    const command = c.getenv(if (initial and slot == 0 and count >= 2) "COMPO_SIDEBAR_COMMAND" else if (initial and slot == 2) "COMPO_FLOAT_COMMAND" else "COMPO_COMMAND");
     const child = forkpty(&masters[slot], null, if (headless) null else &original, &sizes[slot]);
     if (child < 0) {
         masters[slot] = -1;
@@ -145,11 +148,10 @@ fn loop(ws: *c.winsize) c_int {
     var dirty = true;
     var input_time: ?u64 = null;
     while (signalValue(&stopped).* == 0 and !quit_requested and (desktop or anyAlive())) {
-        if (input_time) |time| if (milliseconds() -| time >= 50) {
-            if (app.compositor_idle() != 0) return 1;
-            input_time = null;
-            dirty = true;
+        if (startup_job) |*job| if (job.check()) |status| {
+            if (status != 0) return status;
         };
+        if (app.compositor_tick(milliseconds())) dirty = true;
         if (signalValue(&resized).* != 0) {
             signalValue(&resized).* = 0;
             if (geometry(ws) != 0) return 1;
@@ -167,6 +169,15 @@ fn loop(ws: *c.winsize) c_int {
         if (ready < 0) {
             if (c.errno(ready) == .INTR) continue;
             return 1;
+        }
+        // Check readiness before timing out Escape. A busy renderer must not
+        // flush a partial key when its continuation is already waiting on stdin.
+        if (fds[0].revents & c.POLL.IN == 0) {
+            if (input_time) |time| if (milliseconds() -| time >= 50) {
+                if (app.compositor_idle() != 0) return 1;
+                input_time = null;
+                dirty = true;
+            };
         }
         const polled_children = children;
         control_server.?.service(fds[capacity + 1 ..], ws.col, ws.row);
@@ -221,10 +232,10 @@ pub fn run() c_int {
         _ = writeAll(2, "compo needs a terminal on stdin and stdout\n");
         return 1;
     }
-    desktop = headless or c.getenv("TMUXPP_DESKTOP") != null or
-        (c.getenv("TMUXPP_SINGLE") == null and c.getenv("TMUXPP_FLOAT") == null and
-            c.getenv("TMUXPP_COMMAND") == null and c.getenv("TMUXPP_SIDEBAR_COMMAND") == null and c.getenv("TMUXPP_LEGACY") == null);
-    count = if (desktop) 0 else if (c.getenv("TMUXPP_SINGLE") != null) 1 else if (c.getenv("TMUXPP_FLOAT") != null) 3 else 2;
+    desktop = startup_script != null or headless or c.getenv("COMPO_DESKTOP") != null or
+        (c.getenv("COMPO_SINGLE") == null and c.getenv("COMPO_FLOAT") == null and
+            c.getenv("COMPO_COMMAND") == null and c.getenv("COMPO_SIDEBAR_COMMAND") == null and c.getenv("COMPO_LEGACY") == null);
+    count = if (desktop) 0 else if (c.getenv("COMPO_SINGLE") != null) 1 else if (c.getenv("COMPO_FLOAT") != null) 3 else 2;
     if (geometry(&ws) < 0 or ws.col == 0 or ws.row == 0) return 1;
     control_server = control.Server.init() catch {
         _ = writeAll(2, "Unable to create compo control socket\n");
@@ -265,6 +276,13 @@ pub fn run() c_int {
         _ = display("\x1b[?2026l\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[?1049l");
     }
     if (display("\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J") != 0) return 1;
+    if (startup_script) |script| {
+        startup_job = @import("startup.zig").Job.start(script, startup_binary, &control_server.?.path) catch |err| {
+            std.log.err("could not start startup script: {s}", .{@errorName(err)});
+            return 1;
+        };
+    }
+    defer if (startup_job) |*job| job.deinit();
     const result = loop(&ws);
     cleanupChildren();
     if (signalValue(&stopped).* != 0) return 128 + signalValue(&stopped).*;

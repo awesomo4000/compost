@@ -97,7 +97,9 @@ with tempfile.TemporaryDirectory(prefix='compo-aurora-', dir='/tmp') as director
         for rgb in (b'244;55;151', b'111;85;240', b'174;65;209', b'49;179;144'):
             assert b'\x1b[0;38;2;' + rgb + b'm' in host.data, rgb
         host.data.clear()
-        os.write(host.master, b'\x1b[<35;14;5M')
+        # Hover reported as right-button motion without a captured press still
+        # highlights the border, and must not start a resize.
+        os.write(host.master, b'\x1b[<34;14;5M')
         host.until(lambda: '↖'.encode() in host.data)
         assert b'\x1b[0;38;2;247;115;182m' in host.data
         assert b'\x1b[2J' not in host.data

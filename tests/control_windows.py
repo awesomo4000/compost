@@ -13,7 +13,7 @@ import time
 
 binary = Path(__file__).resolve().parents[1] / 'zig-out/bin/compo'
 with tempfile.TemporaryDirectory(prefix='compo-windows-', dir='/tmp') as directory:
-    host = subprocess.Popen([str(binary)], env=dict(os.environ, COMPO_HEADLESS='80x24'),
+    host = subprocess.Popen([str(binary), "--no-init"], env=dict(os.environ, COMPO_HEADLESS='80x24'),
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     peer = None
     pids = []

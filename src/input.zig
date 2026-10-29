@@ -25,7 +25,9 @@ pub const Decoder = struct {
                 if (self.len == self.pending.len) try self.flush(sink);
                 self.pending[self.len] = byte;
                 self.len += 1;
-                if (self.len == 2 and byte != '[') {
+                // Application cursor keys use SS3 (ESC O A/B/C/D). Keep the
+                // introducer with its final byte just as we do for CSI keys.
+                if (self.len == 2 and byte != '[' and byte != 'O') {
                     try self.flush(sink);
                     continue;
                 }
@@ -92,7 +94,12 @@ pub const Decoder = struct {
             try sink.emit(sink.context, .{ .bytes = &single });
         }
     }
-    /// A short idle timeout forwards standalone Escape and incomplete sequences.
+    /// Only a lone Escape needs a timeout to distinguish it from a key sequence.
+    /// Once CSI/SS3 has begun, a delay between reads must not split the key.
+    pub fn idle(self: *Decoder, sink: Sink) !void {
+        if (self.len == 1) try self.flush(sink);
+    }
+    /// Explicit recovery for an unrecognized or oversized sequence.
     pub fn flush(self: *Decoder, sink: Sink) !void {
         if (self.len != 0) try sink.emit(sink.context, .{ .bytes = self.pending[0..self.len] });
         self.len = 0;
@@ -135,4 +142,44 @@ test "fragmented mouse, focus shortcut, paste, and Escape framing" {
     try decoder.flush(sink);
     try std.testing.expectEqual(@as(usize, 1), recorder.toggles);
     try std.testing.expectEqualStrings("\x1d\x1b[200~\x1d\t\x1b[201~\x1b", recorder.bytes.items);
+}
+
+test "CSI and SS3 keys remain atomic across reads and idle gaps" {
+    const Recorder = struct {
+        expected: []const u8,
+        calls: usize = 0,
+        fn emit(ctx: *anyopaque, event: Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            switch (event) {
+                .bytes => |bytes| {
+                    try std.testing.expectEqualStrings(self.expected, bytes);
+                    self.calls += 1;
+                },
+                else => return error.UnexpectedEvent,
+            }
+        }
+    };
+    for ([_][]const u8{ "\x1bOA", "\x1bOB", "\x1bOC", "\x1bOD", "\x1bOP", "\x1b[A", "\x1b[D", "\x1b[1;5D", "\x1b[57350;1:2u" }) |key| {
+        for (1..key.len) |split| {
+            var decoder: Decoder = .{};
+            var recorder: Recorder = .{ .expected = key };
+            const sink: Sink = .{ .context = &recorder, .emit = Recorder.emit };
+            try decoder.feed(key[0..split], sink);
+            if (split >= 2) {
+                try decoder.idle(sink);
+                try decoder.idle(sink);
+            }
+            try std.testing.expectEqual(@as(usize, 0), recorder.calls);
+            try decoder.feed(key[split..], sink);
+            try std.testing.expectEqual(@as(usize, 1), recorder.calls);
+            for (0..1000) |_| try decoder.feed(key, sink);
+            try std.testing.expectEqual(@as(usize, 1001), recorder.calls);
+        }
+    }
+    var decoder: Decoder = .{};
+    var recorder: Recorder = .{ .expected = "\x1b" };
+    const sink: Sink = .{ .context = &recorder, .emit = Recorder.emit };
+    try decoder.feed("\x1b", sink);
+    try decoder.idle(sink);
+    try std.testing.expectEqual(@as(usize, 1), recorder.calls);
 }

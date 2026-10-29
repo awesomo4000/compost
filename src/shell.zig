@@ -34,7 +34,9 @@ fn flushDiagnostics() void {
     if (diagnostic_overflow) std.log.warn("additional terminal diagnostics omitted", .{});
 }
 const host = @import("host.zig");
-const Slot = struct { browsing: bool = false, selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
+const Notice = struct { count: usize, action: enum { copied, pasted }, until: u64 };
+var paste_target: ?struct { id: ?core.Id, count: usize = 0, bracketed: bool = false } = null;
+const Slot = struct { notice: ?Notice = null, browsing: bool = false, selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
     var result: [host.capacity]Slot = undefined;
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true, .inactive_cursor = true } };
@@ -67,9 +69,69 @@ var drawn_scene: ?u64 = null;
 var modes_initialized = false;
 var cursor_keys: ?bool = null;
 const allocator = std.heap.smp_allocator;
+var trace_mouse = false;
+const usage =
+    \\Usage: compo [--init FILE | --no-init] [--help|-h]
+    \\       compo ctl [--socket PATH] COMMAND
+    \\
+    \\With no arguments, open the compositor desktop.
+    \\Startup: --init FILE, otherwise COMPO_INIT or ~/.config/compo/init.sh.
+    \\XDG_CONFIG_HOME overrides ~/.config. --no-init disables startup scripts.
+    \\Scripts run under /bin/sh with COMPO_BIN and COMPO_SOCKET, outside any pane.
+    \\Ctrl-] Enter: new shell    Ctrl-] Tab: focus next window    Ctrl-] q: quit
+    \\Alt-drag: move/dock        Ctrl-Alt-drag: free move         Border drag: resize
+    \\Ctrl-] [: scrollback      Ctrl-] c: select mode           Ctrl-] y: copy
+    \\
+    \\Run compo ctl --help for per-window commands and placement options.
+    \\COMPO_SOCKET selects the control socket for ctl and is inherited by children.
+    \\COMPO_BORDER_STYLE=plain selects plain borders instead of the aurora gradient.
+    \\COMPO_HEADLESS=80x24 runs a headless control host for testing.
+    \\COMPO_SINGLE=1, COMPO_LEGACY=1, COMPO_FLOAT=1 select fixture layouts.
+    \\COMPO_COMMAND, COMPO_SIDEBAR_COMMAND, COMPO_FLOAT_COMMAND set fixture commands.
+    \\COMPO_DESKTOP=1 forces empty desktop startup even with fixture commands set.
+    \\COMPO_TRACE_MOUSE=1 traces button events and routing to stderr, without keys.
+    \\Terminal diagnostics are buffered until exit when stderr is a terminal.
+    \\Redirect stderr for live diagnostics: compo 2>/tmp/compo.log
+    \\
+;
+
+fn traceMouse(mouse: input.Mouse, comptime format: []const u8, args: anytype) void {
+    // Hover can produce thousands of events. Trace buttons/wheel only.
+    if (trace_mouse and mouse.button & 32 == 0) std.log.scoped(.mouse_trace).warn(format, args);
+}
 
 pub fn main(init: std.process.Init) !void {
+    const args = try init.minimal.args.toSlice(init.arena.allocator());
+    if (args.len > 1 and std.mem.eql(u8, args[1], "ctl")) {
+        const status = @import("ctl.zig").run(init.gpa, args[2..]) catch |err| {
+            std.debug.print("compo ctl: {s}\n", .{@errorName(err)});
+            std.process.exit(1);
+        };
+        if (status != 0) std.process.exit(status);
+        return;
+    }
+    var init_path: ?[:0]const u8 = null;
+    var no_init = false;
+    var arg_index: usize = 1;
+    while (arg_index < args.len) : (arg_index += 1) {
+        const arg = args[arg_index];
+        if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
+            if (host.display(usage) != 0) return error.DisplayWriteFailed;
+            return;
+        } else if (std.mem.eql(u8, arg, "--init")) {
+            if (init_path != null or no_init) return error.ConflictingStartupOptions;
+            arg_index += 1;
+            if (arg_index == args.len) return error.MissingStartupFile;
+            init_path = args[arg_index];
+        } else if (std.mem.eql(u8, arg, "--no-init")) {
+            if (init_path != null) return error.ConflictingStartupOptions;
+            no_init = true;
+        } else return error.UnknownCommand;
+    }
+    host.startup_script = try @import("startup.zig").findScript(init.arena.allocator(), init_path, no_init);
+    if (host.startup_script != null) host.startup_binary = try std.process.executablePathAlloc(init.io, init.arena.allocator());
     io = init.io;
+    trace_mouse = if (std.c.getenv("COMPO_TRACE_MOUSE")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false;
     if (std.c.getenv("COMPO_BORDER_STYLE")) |value| {
         if (std.mem.eql(u8, std.mem.span(value), "plain")) decoration.style = .plain;
     }
@@ -244,6 +306,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 try display("\x1b]52;c;");
                 try display(encoded);
                 try display("\x1b\\");
+                showNotice(slot, .copied, characterCount(text));
                 slot.surface.?.clearSelection();
                 slot.selecting = false;
                 selection_drag = null;
@@ -286,6 +349,30 @@ fn event(_: *anyopaque, value: input.Event) !void {
             if (show and !scene.get(slot.id).?.bounds.empty()) try focus(slot.id);
         },
         .bytes => |bytes| {
+            if (std.mem.eql(u8, bytes, "\x1b[200~")) {
+                paste_target = .{ .id = null };
+                if (focused()) |slot| if (!slot.browsing) {
+                    paste_target.?.id = slot.id;
+                    paste_target.?.bracketed = slot.surface.?.terminal.modes.get(.bracketed_paste);
+                    slot.surface.?.clearSelection();
+                    slot.selecting = false;
+                    selection_drag = null;
+                    scene.releasePointer();
+                    if (!slot.surface.?.terminal.screens.active.viewportIsBottom()) slot.surface.?.scroll(.bottom);
+                    if (slot.surface.?.terminal.modes.get(.bracketed_paste)) try write(slot, bytes);
+                };
+                return;
+            }
+            if (paste_target) |*paste| {
+                const end = std.mem.eql(u8, bytes, "\x1b[201~");
+                for (&slots) |*slot| if (slot.surface != null and paste.id == slot.id) {
+                    if (!end or paste.bracketed) try write(slot, bytes);
+                    if (end) showNotice(slot, .pasted, paste.count) else paste.count +|= characterCount(bytes);
+                };
+                if (end) paste_target = null;
+                return;
+            }
+            if (std.mem.eql(u8, bytes, "\x1b[201~")) return;
             if (drag != null and std.mem.eql(u8, bytes, "\x1b")) {
                 try cancelDrag();
                 return;
@@ -308,6 +395,9 @@ fn event(_: *anyopaque, value: input.Event) !void {
                     const s = slot.surface.?;
                     if (std.mem.eql(u8, bytes, "\x1b") or std.mem.eql(u8, bytes, "q")) {
                         slot.browsing = false;
+                        s.clearSelection();
+                        selection_drag = null;
+                        scene.releasePointer();
                         s.scroll(.bottom);
                     } else if (std.mem.eql(u8, bytes, "k") or std.mem.eql(u8, bytes, "\x1b[A")) s.scroll(.{ .delta = -1 }) else if (std.mem.eql(u8, bytes, "j") or std.mem.eql(u8, bytes, "\x1b[B")) s.scroll(.{ .delta = 1 }) else if (std.mem.eql(u8, bytes, "\x1b[5~")) s.scroll(.{ .delta = -@as(isize, s.size.rows) }) else if (std.mem.eql(u8, bytes, "\x1b[6~")) s.scroll(.{ .delta = s.size.rows }) else if (std.mem.eql(u8, bytes, "g")) s.scroll(.top) else if (std.mem.eql(u8, bytes, "G")) s.scroll(.bottom);
                     return;
@@ -330,8 +420,21 @@ fn event(_: *anyopaque, value: input.Event) !void {
         .focus => |is_focused| if (focused()) |slot| {
             if (slot.surface.?.terminal.modes.get(.focus_event)) try write(slot, if (is_focused) "\x1b[I" else "\x1b[O");
         },
-        .mouse => |mouse| {
+        .mouse => |incoming_mouse| {
+            var mouse = incoming_mouse;
+            traceMouse(mouse, "received button={d} release={} cell={d},{d} focus={?d} capture={?d}", .{ mouse.button, mouse.release, mouse.x, mouse.y, scene.focus, scene.capture });
+            // All-motion reporting includes motion with a button held. A drag
+            // that began outside a child (or whose release was intercepted)
+            // must not create a new application drag without a preceding press.
+            // Treat it as hover so borders and application hover still work.
+            // tmux treats the next real click as drag-end if forwarded unchanged.
+            if (!mouse.release and mouse.button & 32 != 0 and mouse.button & 3 != 3 and scene.capture == null) {
+                if (trace_mouse) std.log.scoped(.mouse_trace).warn("normalized orphan drag to hover button={d} cell={d},{d}", .{ mouse.button, mouse.x, mouse.y });
+                // Retain Shift/Alt/Control, clear button identity, set no-button motion.
+                mouse.button = (mouse.button & 28) | 35;
+            }
             if (selection_drag) |*selection| {
+                traceMouse(mouse, "consumed by selection window={d}", .{selection.id});
                 for (&slots) |*slot| if (slot.surface != null and slot.id == selection.id) {
                     const inner = decoration.contentFor(&scene, selection.id);
                     if (!inner.empty() and (mouse.release or mouse.button & 32 != 0)) {
@@ -358,10 +461,12 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 hover_edge = edge;
             }
             if (border_capture) {
+                traceMouse(mouse, "consumed by border capture", .{});
                 if (mouse.release) border_capture = false;
                 return;
             }
             if (drag) |original_active| {
+                traceMouse(mouse, "consumed by window drag window={d}", .{original_active.id});
                 var active = original_active;
                 if (mouse.release) {
                     if (active.started) if (destination) |drop| {
@@ -437,12 +542,14 @@ fn event(_: *anyopaque, value: input.Event) !void {
                     return;
                 }
                 if (on_border) {
+                    traceMouse(mouse, "consumed by border window={d}", .{target});
                     border_capture = true;
                     return;
                 }
                 if (mouse.button == 0) for (&slots) |*slot| if (slot.surface != null and slot.id == target) {
                     const modes = slot.surface.?.terminal.modes;
-                    if (slot.selecting or (!modes.get(.mouse_event_normal) and !modes.get(.mouse_event_button) and !modes.get(.mouse_event_any))) {
+                    if (slot.selecting or slot.browsing or (!modes.get(.mouse_event_normal) and !modes.get(.mouse_event_button) and !modes.get(.mouse_event_any))) {
+                        traceMouse(mouse, "selection start window={d} forced={} browsing={} modes={}/{}/{}", .{ target, slot.selecting, slot.browsing, modes.get(.mouse_event_normal), modes.get(.mouse_event_button), modes.get(.mouse_event_any) });
                         slot.surface.?.clearSelection();
                         selection_drag = .{ .id = target, .x = @intCast(@as(i32, mouse.x) - inner.x), .y = @intCast(@as(i32, mouse.y) - inner.y) };
                         try scene.capturePointer(target);
@@ -458,6 +565,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 const normal = s.terminal.modes.get(.mouse_event_normal);
                 const button = s.terminal.modes.get(.mouse_event_button);
                 const any = s.terminal.modes.get(.mouse_event_any);
+                traceMouse(mouse, "route window={d} modes={}/{}/{} browsing={} viewport_bottom={}", .{ target, normal, button, any, slot.browsing, s.terminal.screens.active.viewportIsBottom() });
                 if (!mouse.release and mouse.button & 64 != 0 and mouse.button & 3 < 2 and
                     decoration.contentFor(&scene, target).contains(mouse.x, mouse.y) and
                     (slot.browsing or (!normal and !button and !any)))
@@ -473,6 +581,7 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 if (scene.capture == null and !bounds.contains(mouse.x, mouse.y)) return;
                 const x = std.math.clamp(@as(i32, mouse.x) - bounds.x, 0, bounds.w - 1) + 1;
                 const y = std.math.clamp(@as(i32, mouse.y) - bounds.y, 0, bounds.h - 1) + 1;
+                traceMouse(mouse, "forward window={d} button={d} release={} child_cell={d},{d} sgr={} pixels={}", .{ target, mouse.button, mouse.release, x, y, s.terminal.modes.get(.mouse_format_sgr), s.terminal.modes.get(.mouse_format_sgr_pixels) });
                 if (s.terminal.modes.get(.mouse_format_sgr_pixels)) {
                     // The outer host requests cell reports. Project their centers
                     // into the child pixel grid, after subtracting pane borders.
@@ -503,7 +612,7 @@ pub fn compositor_input(bytes: []const u8) c_int {
     return 0;
 }
 pub fn compositor_idle() c_int {
-    decoder.flush(sink) catch |err| {
+    decoder.idle(sink) catch |err| {
         failure = err;
         return -1;
     };
@@ -570,6 +679,13 @@ fn draw() !void {
         const output = &border_output.?;
         output.clearRetainingCapacity();
         for (&slots) |*slot| if (slot.surface != null) try decoration.draw(&output.writer, &render_scene, slot.id, if (hover_id == slot.id) hover_edge else null);
+        for (&slots) |*slot| if (slot.surface != null) {
+            if (slot.notice) |notice| {
+                var buffer: [64]u8 = undefined;
+                const label = try std.mem.print(&buffer, "[ {d} {s} ]", .{ notice.count, @tagName(notice.action) });
+                try decoration.drawNotice(&output.writer, &render_scene, slot.id, label);
+            }
+        };
         if (!hasShells()) {
             const label = "compo";
             const hint = "Ctrl-] Enter: shell   Ctrl-] q: quit";
@@ -627,6 +743,7 @@ pub fn compositor_exit(index: c_int) c_int {
     clearImages(slot);
     slot.surface.?.destroy();
     slot.surface = null;
+    slot.notice = null;
     slot.browsing = false;
     slot.selecting = false;
     if (selection_drag) |selection| if (selection.id == slot.id) {
@@ -676,8 +793,11 @@ pub fn compositor_finish() void {
 
 pub var control_dirty = false;
 const Placement = struct {
-    kind: enum { floating },
-    rect: core.Rect,
+    kind: enum { floating, tiled },
+    rect: ?core.Rect = null,
+    target: ?[]const u8 = null,
+    edge: ?core.Edge = null,
+    ratio: ?u16 = null,
     fit: enum { exact, constrain } = .exact,
     layer: i32 = 0,
 };
@@ -687,6 +807,8 @@ const ControlRequest = struct {
     window: ?[]const u8 = null,
     name: ?[]const u8 = null,
     argv: ?[]const []const u8 = null,
+    command: ?[]const u8 = null,
+    shell: ?[]const u8 = null,
     cwd: ?[]const u8 = null,
     env: std.json.ArrayHashMap([]const u8) = .{},
     placement: ?Placement = null,
@@ -731,6 +853,14 @@ fn windowInfo(a: std.mem.Allocator, instance: []const u8, slot: *const Slot) !Wi
 }
 fn resolveWindow(instance: []const u8, reference: ?[]const u8) !*Slot {
     const ref = reference orelse return error.MissingWindow;
+    const explicit_name = std.mem.startsWith(u8, ref, "name:");
+    if (explicit_name or std.mem.indexOfScalar(u8, ref, '/') == null) {
+        const name = if (explicit_name) ref[5..] else ref;
+        for (&slots) |*slot| if (slot.surface != null) {
+            if (slot.name) |current| if (std.mem.eql(u8, name, current)) return slot;
+        };
+        return error.UnknownWindow;
+    }
     if (ref.len <= instance.len + 1 or !std.mem.startsWith(u8, ref, instance) or ref[instance.len] != '/') return error.UnknownWindow;
     const id = std.fmt.parseInt(core.Id, ref[instance.len + 1 ..], 10) catch return error.UnknownWindow;
     for (&slots) |*slot| if (slot.surface != null and slot.id == id) return slot;
@@ -739,19 +869,84 @@ fn resolveWindow(instance: []const u8, reference: ?[]const u8) !*Slot {
 fn validString(value: []const u8) bool {
     return std.mem.indexOfScalar(u8, value, 0) == null;
 }
-fn placementScene(candidate: *core.Scene, id: ?core.Id, placement: Placement) !core.Id {
-    const rect = try core.Rect.init(placement.rect.x, placement.rect.y, placement.rect.w, placement.rect.h);
+fn placementScene(candidate: *core.Scene, id: ?core.Id, placement: Placement, instance: []const u8) !core.Id {
+    if (placement.kind == .tiled) {
+        if (placement.rect != null or placement.layer != 0 or placement.fit != .exact) return error.InvalidPlacement;
+        const anchor = if (placement.target) |ref| (try resolveWindow(instance, ref)).id else null;
+        const ratio = placement.ratio orelse 5000;
+        if (ratio == 0 or ratio >= 10000) return error.InvalidSplit;
+        if (placement.edge == null and (anchor != null or placement.ratio != null)) return error.MissingEdge;
+        if (candidate.tree != null and placement.edge == null) return error.MissingEdge;
+        var empty = true;
+        for (candidate.windows) |maybe| if (maybe) |w| {
+            if (w.options.kind == .tiled and (id == null or w.id != id.?)) empty = false;
+        };
+        const target = id orelse try candidate.add(.{ .kind = .{ .floating = candidate.root } });
+        try candidate.placeTileRatio(target, anchor, placement.edge orelse .right, ratio);
+        // Scripted first tiles fill the workspace, unlike edge-drop previews.
+        if (empty) {
+            candidate.first_tile_edge = null;
+            try candidate.resizeRoot(candidate.root);
+        }
+        try validateControlLayout(candidate);
+        return target;
+    }
+    if (placement.target != null or placement.edge != null or placement.ratio != null) return error.InvalidPlacement;
+    const requested = placement.rect orelse return error.MissingRect;
+    const rect = try core.Rect.init(requested.x, requested.y, requested.w, requested.h);
     if (rect.w < 3 or rect.h < 3) return error.InvalidBounds;
     const options: core.Options = .{ .kind = .{ .floating = rect }, .layer = placement.layer };
     const target = if (id) |existing| blk: {
-        if (candidate.get(existing).?.options.kind != .floating) return error.NotFloating;
         try candidate.configure(existing, options);
         break :blk existing;
     } else try candidate.add(options);
     const actual = candidate.get(target).?.bounds;
-    if (actual.w < 3 or actual.h < 3) return error.InvalidBounds;
     if (placement.fit == .exact and !std.meta.eql(rect, actual)) return error.PlacementRejected;
+    try validateControlLayout(candidate);
     return target;
+}
+fn validateControlLayout(candidate: *const core.Scene) !void {
+    for (candidate.windows) |maybe| if (maybe) |w| {
+        if (!w.visible) continue;
+        const bounds = decoration.contentFor(candidate, w.id);
+        if (bounds.w < 1 or bounds.h < 1) return error.InvalidBounds;
+    };
+}
+fn resizeControlLayout(candidate: *const core.Scene) !void {
+    for (&slots) |*slot| if (slot.surface) |s| {
+        const bounds = decoration.contentFor(candidate, slot.id);
+        if (bounds.empty()) continue;
+        const changed = try s.resize(.{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height });
+        if (changed and host.setSize(slot.index, s.size.columns, s.size.rows, pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
+    };
+}
+fn controlArgv(a: std.mem.Allocator, req: ControlRequest) ![]const []const u8 {
+    if (req.argv) |argv| {
+        if (req.command != null or req.shell != null) return error.InvalidArgv;
+        return argv;
+    }
+    const shell = req.shell orelse if (std.c.getenv("SHELL")) |v| std.mem.span(v) else "/bin/sh";
+    if (shell.len == 0 or shell[0] != '/' or !validString(shell)) return error.InvalidShell;
+    if (req.command) |command| {
+        if (!validString(command)) return error.InvalidArgv;
+        const base = std.fs.path.basename(shell);
+        var supported = false;
+        for ([_][]const u8{ "sh", "bash", "zsh", "dash", "ksh" }) |known| {
+            if (std.mem.eql(u8, base, known)) supported = true;
+        }
+        if (!supported) return error.UnsupportedCommandShell;
+        const argv = try a.alloc([]const u8, 4);
+        // A newline also terminates trailing comments in the supplied command.
+        argv[0] = shell;
+        argv[1] = "-c";
+        argv[2] = try std.fmt.allocPrint(a, "{s}\nexec \"$0\" -i", .{command});
+        argv[3] = shell;
+        return argv;
+    }
+    const argv = try a.alloc([]const u8, 2);
+    argv[0] = shell;
+    argv[1] = "-i";
+    return argv;
 }
 
 pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []const u8) ![]u8 {
@@ -769,7 +964,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         if ((create or place) and std.mem.eql(u8, key, "placement")) continue;
         if (create) {
             var allowed = false;
-            for ([_][]const u8{ "name", "argv", "cwd", "env", "focus" }) |field| if (std.mem.eql(u8, key, field)) {
+            for ([_][]const u8{ "name", "argv", "command", "shell", "cwd", "env", "focus" }) |field| if (std.mem.eql(u8, key, field)) {
                 allowed = true;
             };
             if (allowed) continue;
@@ -791,7 +986,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
     if (drag != null and !get) return error.DragInProgress;
     var slot: *Slot = undefined;
     if (create) {
-        const argv = req.argv orelse return error.MissingArgv;
+        const argv = try controlArgv(temp, req);
         if (argv.len == 0 or argv.len > 128 or argv[0].len == 0 or argv[0].len > 512 or argv[0][0] != '/') return error.InvalidArgv;
         var total: usize = 0;
         for (argv) |arg| {
@@ -816,7 +1011,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         };
         slot = available orelse return error.CapacityExceeded;
         var candidate = scene;
-        const id = try placementScene(&candidate, null, req.placement orelse return error.MissingPlacement);
+        const id = try placementScene(&candidate, null, req.placement orelse return error.MissingPlacement, instance);
         const name = if (req.name) |name| try allocator.dupe(u8, name) else null;
         errdefer if (name) |n| allocator.free(n);
         const command = try allocator.dupe(u8, argv[0]);
@@ -826,6 +1021,9 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         errdefer s.destroy();
         if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
         try host.spawnCommand(@intCast(slot.index), argv, req.cwd, req.env);
+        errdefer host.closeWindow(@intCast(slot.index));
+        errdefer resizeControlLayout(&scene) catch {};
+        try resizeControlLayout(&candidate);
         scene = candidate;
         slot.id = id;
         slot.surface = s;
@@ -834,25 +1032,25 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         slot.floating_bounds = null;
         slot.drawn_revision = null;
         slot.renderer.invalidate(allocator);
-        if (req.focus) try focus(id);
+        if (req.focus) focus(id) catch {
+            scene.setFocus(id) catch {};
+        };
     } else {
         slot = try resolveWindow(instance, req.window);
         if (place) {
             var candidate = scene;
-            _ = try placementScene(&candidate, slot.id, req.placement orelse return error.MissingPlacement);
-            const bounds = decoration.contentFor(&candidate, slot.id);
-            const old = slot.surface.?.size;
-            if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
-            _ = slot.surface.?.resize(.{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }) catch |err| {
-                _ = host.setSize(slot.index, old.columns, old.rows, pixel_width, pixel_height);
+            _ = try placementScene(&candidate, slot.id, req.placement orelse return error.MissingPlacement, instance);
+            resizeControlLayout(&candidate) catch |err| {
+                resizeControlLayout(&scene) catch {};
                 return err;
             };
             scene = candidate;
         } else if (std.mem.eql(u8, req.op, "window.close")) {
+            const removed = (try windowInfo(temp, instance, slot)).window;
             host.closeWindow(@intCast(slot.index));
             if (compositor_exit(slot.index) != 0) return error.CloseFailed;
             control_dirty = true;
-            return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .removed = req.window.?, .scene_revision = scene.revision } }, .{});
+            return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .removed = removed, .scene_revision = scene.revision } }, .{});
         } else if (std.mem.eql(u8, req.op, "window.focus")) {
             try focus(slot.id);
         } else if (std.mem.eql(u8, req.op, "window.raise")) {
@@ -865,5 +1063,30 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         control_dirty = true;
         layout_dirty = true;
     }
-    return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .window = try windowInfo(temp, instance, slot), .requested_rect = if (req.placement) |p| @as(?core.Rect, p.rect) else null, .scene_revision = scene.revision } }, .{});
+    return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .window = try windowInfo(temp, instance, slot), .requested_rect = if (req.placement) |p| p.rect else null, .scene_revision = scene.revision } }, .{});
+}
+
+// Count Unicode scalar starts, including sequences split across input chunks.
+// Combining marks count separately; clipboard payloads are never modified.
+fn characterCount(bytes: []const u8) usize {
+    var total: usize = 0;
+    for (bytes) |byte| if (byte & 0xc0 != 0x80) {
+        total += 1;
+    };
+    return total;
+}
+fn showNotice(slot: *Slot, action: @FieldType(Notice, "action"), total: usize) void {
+    slot.notice = .{ .count = total, .action = action, .until = host.milliseconds() +| 2000 };
+    borders_dirty = true;
+}
+pub fn compositor_tick(now: u64) bool {
+    var expired = false;
+    for (&slots) |*slot| if (slot.notice) |notice| {
+        if (now >= notice.until) {
+            slot.notice = null;
+            expired = true;
+        }
+    };
+    if (expired) borders_dirty = true;
+    return expired;
 }

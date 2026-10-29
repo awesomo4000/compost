@@ -1,9 +1,13 @@
 # Compo control protocol
 
-Status: staged implementation. Transport and floating window lifecycle are
+Status: staged implementation. Transport, floating/tiled window lifecycle, and
+the native `compo ctl` client with persistent `ctl stream` are
 implemented; see [the current API](../docs/control-protocol.md) for supported
 operations and limits. The complete protocol below remains the target, including
-asynchronous lifecycle waits, observation, input, subscriptions, and the CLI.
+asynchronous lifecycle waits, observation, input, subscriptions, and replay waits.
+The CLI and target-relative tile placement were brought forward from chunks 5–6
+to support scripted per-window launches. Shell startup files and live-name targets
+are now supported; see the current API for startup discovery and failure behavior.
 
 ## Purpose
 
@@ -31,8 +35,9 @@ instance ID and the existing monotonic scene window ID, encoded as strings:
 References survive movement, docking, resizing, focus changes, and layer changes.
 An exited or removed reference must never resolve to a subsequent window.
 
-Optional names are unique among live windows within an instance. Resolve a name
-once to an exact reference before replay; never automatically retarget a replay
+Optional names are unique among live windows within an instance. Interactive and
+startup commands may resolve a name to its current live window on each call.
+For a stateful replay driver, resolve a name once to an exact reference; never automatically retarget a replay
 when its named window disappears. List results include reference, name, command,
 process state, geometry, layer, stacking order, visibility, and focus.
 

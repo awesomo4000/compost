@@ -211,3 +211,43 @@ test "corner handles resize both edges and keep the opposite corner fixed" {
     try std.testing.expect(edgeAt(&scene, id, 21, 11) == null);
     try std.testing.expectEqual(Edge.top, edgeAt(&scene, id, 25, 10).?);
 }
+
+/// Transient ASCII label on the actual top border, including a shared divider.
+/// Skip a label that cannot fit or is partly covered rather than painting content.
+pub fn drawNotice(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, label: []const u8) !void {
+    const window = scene.get(id) orelse return;
+    const r = window.bounds;
+    if (!window.visible or !hasBorder(r) or label.len > @as(usize, @intCast(@max(0, r.w - 4)))) return;
+    const shared = sharesTop(scene, id);
+    const y = r.y - @as(i32, if (shared) 1 else 0);
+    const x = r.right() - @as(i32, @intCast(label.len)) - 2;
+    for (0..label.len) |i| {
+        const px = x + @as(i32, @intCast(i));
+        const owner = scene.hitTest(px, y) orelse return;
+        if (owner != id) {
+            const other = scene.get(owner).?;
+            if (!shared or other.options.kind != .tiled or other.bounds.bottom() != r.y) return;
+        }
+        if (contentFor(scene, owner).contains(px, y)) return;
+    }
+    try w.print("\x1b[{d};{d}H\x1b[0;38;2;90;150;140m{s}\x1b[0m", .{ y + 1, x + 1, label });
+}
+
+test "notices use shared top borders and avoid covered or narrow windows" {
+    const a = std.testing.allocator;
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 80, 24));
+    const top = try scene.add(.{ .kind = .tiled });
+    const bottom = try scene.splitTile(top, .vertical, 5000, .{ .kind = .tiled });
+    var output: std.Io.Writer.Allocating = .init(a);
+    defer output.deinit();
+    try drawNotice(&output.writer, &scene, bottom, "[ 5 copied ]");
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "\x1b[12;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, output.written(), "[ 5 copied ]") != null);
+    const cover = try scene.add(.{ .kind = .{ .floating = try core.Rect.init(60, 10, 20, 5) } });
+    output.clearRetainingCapacity();
+    try drawNotice(&output.writer, &scene, bottom, "[ 5 copied ]");
+    try std.testing.expectEqual(@as(usize, 0), output.written().len);
+    try scene.moveResize(cover, try core.Rect.init(1, 1, 5, 5));
+    try drawNotice(&output.writer, &scene, cover, "[ 5 copied ]");
+    try std.testing.expectEqual(@as(usize, 0), output.written().len);
+}
