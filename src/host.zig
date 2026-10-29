@@ -273,7 +273,7 @@ pub fn run() c_int {
     }
     defer {
         app.compositor_finish();
-        _ = display("\x1b[?2026l\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[?1049l");
+        _ = display("\x1b[?2026l\x1b[0m\x1b[?1l\x1b[?2004l\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1004l\x1b[?1006l\x1b[?7h\x1b[?25h\x1b[0 q\x1b[?1049l");
     }
     if (display("\x1b[?1049h\x1b[?7l\x1b[?25l\x1b[2J") != 0) return 1;
     if (startup_script) |script| {

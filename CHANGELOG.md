@@ -1,5 +1,9 @@
 # Changelog
 
+## 10/29/2026
+
+- Keep outer cursor visibility and shape stable across redraws, forwarding changes only when needed. Honor per-window synchronized updates with a one-second timeout; layout/focus changes cancel pending holds so geometry remains responsive. Added a real-PTY regression for fragmented updates, independent panes, visibility, shape, and timeout recovery.
+
 ## 10/28/2026
 
 - Added xinitrc-style startup scripts, explicit --init/--no-init options, live-name targeting, and quiet control commands. Scripts arrange windows over the ready control socket without a bootstrap pane; failures report bounded diagnostics and clean up the desktop.

@@ -36,7 +36,7 @@ fn flushDiagnostics() void {
 const host = @import("host.zig");
 const Notice = struct { count: usize, action: enum { copied, pasted }, until: u64 };
 var paste_target: ?struct { id: ?core.Id, count: usize = 0, bracketed: bool = false } = null;
-const Slot = struct { notice: ?Notice = null, browsing: bool = false, selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
+const Slot = struct { sync_until: ?u64 = null, notice: ?Notice = null, browsing: bool = false, selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
     var result: [host.capacity]Slot = undefined;
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true, .inactive_cursor = true } };
@@ -68,6 +68,8 @@ var layout_dirty = true;
 var drawn_scene: ?u64 = null;
 var modes_initialized = false;
 var cursor_keys: ?bool = null;
+var cursor_visible: ?bool = null;
+var cursor_style: ?u8 = null;
 const allocator = std.heap.smp_allocator;
 var trace_mouse = false;
 const usage =
@@ -230,10 +232,14 @@ pub fn compositor_resize(cols: u16, rows: u16, cw: u16, ch: u16, n: c_int) c_int
     return 0;
 }
 pub fn compositor_output(index: c_int, bytes: []const u8) c_int {
-    slots[@intCast(index)].surface.?.feed(bytes) catch |err| {
+    const slot = &slots[@intCast(index)];
+    slot.surface.?.feed(bytes) catch |err| {
         failure = err;
         return -1;
     };
+    if (slot.surface.?.terminal.modes.get(.synchronized_output)) {
+        if (slot.sync_until == null) slot.sync_until = host.milliseconds() +| 1000;
+    } else slot.sync_until = null;
     return 0;
 }
 fn restoreDrag() void {
@@ -273,6 +279,7 @@ fn newShell() !void {
     errdefer {
         slot.surface.?.destroy();
         slot.surface = null;
+        slot.sync_until = null;
     }
     if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0 or !host.spawn(@intCast(slot.index), false)) return error.ChildSpawnFailed;
     try focus(slot.id);
@@ -625,7 +632,7 @@ fn hasShells() bool {
 fn draw() !void {
     var changed = borders_dirty or layout_dirty or drawn_scene != scene.revision;
     for (&slots) |*slot| if (slot.surface) |s| {
-        changed = changed or slot.drawn_revision != s.revision;
+        changed = changed or (slot.sync_until == null and slot.drawn_revision != s.revision);
     };
     if (!changed) return;
     const render_scene = scene;
@@ -634,7 +641,7 @@ fn draw() !void {
         const rect = try drop.preview(&scene, active.id);
         if (!rect.empty()) preview = rect;
     };
-    try display("\x1b[?2026h\x1b[?25l\x1b[?7l\x1b[0m");
+    try display("\x1b[?2026h\x1b[?7l\x1b[0m");
     if (layout_dirty) {
         try display("\x1b[2J");
         // Paint only unoccupied desktop cells. Windows render their own tinted
@@ -668,7 +675,14 @@ fn draw() !void {
             // Preview scenes and cancelled layouts can reuse a revision number.
             slot.renderer.region_scene = null;
         }
-        if (!layout_dirty and drawn_scene == scene.revision and slot.drawn_revision == s.revision) continue;
+        if (!layout_dirty and drawn_scene == scene.revision) {
+            if (slot.sync_until != null or slot.drawn_revision == s.revision) continue;
+        } else if (slot.sync_until != null) {
+            // Geometry/focus changes need a fresh projection. Cancel the hold
+            // rather than leave retained rows at their old screen coordinates.
+            s.terminal.modes.set(.synchronized_output, false);
+            slot.sync_until = null;
+        }
         slot.renderer.tint = if (preview) |rect| .{ .bounds = rect } else null;
         const frame = try slot.renderer.draw(allocator, &render_scene, slot.id, s);
         try display(frame);
@@ -701,6 +715,7 @@ fn draw() !void {
         try display("\x1b[?1000h\x1b[?1002h\x1b[?1003h\x1b[?1006h\x1b[?1004h\x1b[?2004h");
         modes_initialized = true;
     }
+    var visible_cursor = false;
     if (focused()) |slot| {
         const application_keys = slot.surface.?.terminal.modes.get(.cursor_keys);
         if (cursor_keys != application_keys) {
@@ -713,9 +728,24 @@ fn draw() !void {
             var buf: [80]u8 = undefined;
             const x = bounds.x + @as(i32, p.x);
             const y = bounds.y + @as(i32, @intCast(p.y));
-            if (render_scene.hitTest(x, y) == slot.id)
-                try display(try std.mem.print(&buf, "\x1b[{d};{d}H\x1b[?25h", .{ y + 1, x + 1 }));
+            if (render_scene.hitTest(x, y) == slot.id) {
+                visible_cursor = true;
+                const style: u8 = (switch (cursor.visual_style) {
+                    .block, .block_hollow => @as(u8, 1),
+                    .underline => @as(u8, 3),
+                    .bar => @as(u8, 5),
+                }) + @as(u8, if (cursor.blinking) 0 else 1);
+                if (cursor_style != style) {
+                    try display(try std.mem.print(&buf, "\x1b[{d} q", .{style}));
+                    cursor_style = style;
+                }
+                try display(try std.mem.print(&buf, "\x1b[{d};{d}H", .{ y + 1, x + 1 }));
+            }
         };
+    }
+    if (cursor_visible != visible_cursor) {
+        try display(if (visible_cursor) "\x1b[?25h" else "\x1b[?25l");
+        cursor_visible = visible_cursor;
     }
     try display("\x1b[?2026l");
     layout_dirty = false;
@@ -743,6 +773,7 @@ pub fn compositor_exit(index: c_int) c_int {
     clearImages(slot);
     slot.surface.?.destroy();
     slot.surface = null;
+    slot.sync_until = null;
     slot.notice = null;
     slot.browsing = false;
     slot.selecting = false;
@@ -1080,6 +1111,14 @@ fn showNotice(slot: *Slot, action: @FieldType(Notice, "action"), total: usize) v
     borders_dirty = true;
 }
 pub fn compositor_tick(now: u64) bool {
+    var sync_expired = false;
+    for (&slots) |*slot| if (slot.sync_until) |until| {
+        if (now >= until) {
+            slot.sync_until = null;
+            if (slot.surface) |s| s.terminal.modes.set(.synchronized_output, false);
+            sync_expired = true;
+        }
+    };
     var expired = false;
     for (&slots) |*slot| if (slot.notice) |notice| {
         if (now >= notice.until) {
@@ -1088,5 +1127,5 @@ pub fn compositor_tick(now: u64) bool {
         }
     };
     if (expired) borders_dirty = true;
-    return expired;
+    return expired or sync_expired;
 }
