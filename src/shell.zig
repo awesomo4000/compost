@@ -72,6 +72,7 @@ var cursor_visible: ?bool = null;
 var cursor_style: ?u8 = null;
 const allocator = std.heap.smp_allocator;
 var trace_mouse = false;
+var startup_notice: ?struct { text: []const u8, until: u64 } = null;
 const usage =
     \\Usage: compo [--init FILE | --no-init] [--help|-h]
     \\       compo ctl [--socket PATH] COMMAND
@@ -82,6 +83,7 @@ const usage =
     \\Scripts run under /bin/sh with COMPO_BIN and COMPO_SOCKET, outside any pane.
     \\Ctrl-] Enter: new shell    Ctrl-] Tab: focus next window    Ctrl-] q: quit
     \\Alt-drag: move/dock        Ctrl-Alt-drag: free move         Border drag: resize
+    \\Ctrl-] r: reload startup script (replaces all windows)
     \\Ctrl-] [: scrollback      Ctrl-] c: select mode           Ctrl-] y: copy
     \\
     \\Run compo ctl --help for per-window commands and placement options.
@@ -131,7 +133,12 @@ pub fn main(init: std.process.Init) !void {
         } else return error.UnknownCommand;
     }
     host.startup_script = try @import("startup.zig").findScript(init.arena.allocator(), init_path, no_init);
-    if (host.startup_script != null) host.startup_binary = try std.process.executablePathAlloc(init.io, init.arena.allocator());
+    if (host.startup_script != null) {
+        host.startup_binary = try std.process.executablePathAlloc(init.io, init.arena.allocator());
+        var cwd: [4096]u8 = undefined;
+        const path = std.c.getcwd(&cwd, cwd.len) orelse return error.StartupDirectoryUnavailable;
+        host.startup_directory = try init.arena.allocator().dupeSentinel(u8, std.mem.span(@as([*:0]const u8, @ptrCast(path))), 0);
+    }
     io = init.io;
     trace_mouse = if (std.c.getenv("COMPO_TRACE_MOUSE")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false;
     if (std.c.getenv("COMPO_BORDER_STYLE")) |value| {
@@ -320,6 +327,11 @@ fn event(_: *anyopaque, value: input.Event) !void {
                 scene.releasePointer();
             }
         },
+        .reload => host.requestReload() catch |err| startupNotice(switch (err) {
+            error.NoStartupScript => "no startup script",
+            error.StartupBusy => "startup script busy",
+            else => "reload failed",
+        }),
         .quit => host.quit(),
         .toggle_focus => {
             const start: usize = if (focused()) |slot| @intCast(slot.index) else 0;
@@ -707,6 +719,15 @@ fn draw() !void {
                 try output.writer.print("\x1b[{d};{d}H\x1b[36mcompo\x1b[0m\x1b[{d};{d}H{s}", .{ @divTrunc(scene.root.h, 2), @divTrunc(scene.root.w - @as(i32, label.len), 2) + 1, @divTrunc(scene.root.h, 2) + 2, @divTrunc(scene.root.w - @as(i32, hint.len), 2) + 1, hint });
             }
         }
+        if (startup_notice) |notice| {
+            var buf: [96]u8 = undefined;
+            const label = try std.mem.print(&buf, "[ {s} ]", .{notice.text});
+            if (focused()) |slot| {
+                try decoration.drawNotice(&output.writer, &render_scene, slot.id, label);
+            } else if (scene.root.w >= label.len) {
+                try output.writer.print("\x1b[1;1H\x1b[38;2;90;150;140m{s}\x1b[0m", .{label});
+            }
+        }
         try display(output.written());
     }
     // Capture clicks and drags even when the focused shell has not requested mouse input.
@@ -984,6 +1005,11 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
     const parsed = std.json.parseFromValue(ControlRequest, a, value, .{}) catch return error.InvalidRequest;
     defer parsed.deinit();
     const req = parsed.value;
+    if (std.mem.eql(u8, req.op, "startup.get") or std.mem.eql(u8, req.op, "startup.reload")) {
+        for (value.object.keys()) |key| if (!std.mem.eql(u8, key, "id") and !std.mem.eql(u8, key, "op")) return error.InvalidRequest;
+        if (std.mem.eql(u8, req.op, "startup.reload")) try host.requestReload();
+        return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .script = host.startup_script, .cwd = host.startup_directory, .phase = @tagName(host.startup_phase) } }, .{});
+    }
     const create = std.mem.eql(u8, req.op, "window.create");
     const list = std.mem.eql(u8, req.op, "window.list");
     const get = std.mem.eql(u8, req.op, "window.get");
@@ -1110,7 +1136,30 @@ fn showNotice(slot: *Slot, action: @FieldType(Notice, "action"), total: usize) v
     slot.notice = .{ .count = total, .action = action, .until = host.milliseconds() +| 2000 };
     borders_dirty = true;
 }
+pub fn startupNotice(text: []const u8) void {
+    startup_notice = .{ .text = text, .until = host.milliseconds() +| 3000 };
+    borders_dirty = true;
+    control_dirty = true;
+}
+pub fn closeAllWindows() void {
+    paste_target = null;
+    selection_drag = null;
+    if (drag != null) restoreDrag();
+    for (&slots) |*slot| if (slot.surface != null) {
+        host.closeWindow(@intCast(slot.index));
+        _ = compositor_exit(slot.index);
+    };
+    layout_dirty = true;
+}
 pub fn compositor_tick(now: u64) bool {
+    var notice_expired = false;
+    if (startup_notice) |notice| if (now >= notice.until) {
+        startup_notice = null;
+        // Clear a desktop notice even when no window owns the top row.
+        if (!hasShells()) layout_dirty = true;
+        borders_dirty = true;
+        notice_expired = true;
+    };
     var sync_expired = false;
     for (&slots) |*slot| if (slot.sync_until) |until| {
         if (now >= until) {
@@ -1127,5 +1176,5 @@ pub fn compositor_tick(now: u64) bool {
         }
     };
     if (expired) borders_dirty = true;
-    return expired or sync_expired;
+    return expired or sync_expired or notice_expired;
 }

@@ -32,7 +32,10 @@ pub fn findScript(a: std.mem.Allocator, explicit: ?[:0]const u8, disabled: bool)
         if (!required and c.errno(result) == .NOENT) return null;
         return error.StartupFileUnreadable;
     }
-    return path;
+    if (std.fs.path.isAbsolute(path.?)) return path;
+    var cwd: [4096]u8 = undefined;
+    const base = c.getcwd(&cwd, cwd.len) orelse return error.StartupDirectoryUnavailable;
+    return try a.dupeSentinel(u8, try std.fs.path.join(a, &.{ std.mem.span(@as([*:0]const u8, @ptrCast(base))), path.? }), 0);
 }
 
 pub const Job = struct {
@@ -44,6 +47,15 @@ pub const Job = struct {
     truncated: bool = false,
 
     pub fn start(script: [:0]const u8, binary: [:0]const u8, socket: [*:0]const u8) !Job {
+        return launch(script, binary, socket, false);
+    }
+
+    pub fn validate(script: [:0]const u8, binary: [:0]const u8, socket: [*:0]const u8) !Job {
+        if (c.access(script.ptr, 4) != 0) return error.StartupFileUnreadable;
+        return launch(script, binary, socket, true);
+    }
+
+    fn launch(script: [:0]const u8, binary: [:0]const u8, socket: [*:0]const u8, syntax_only: bool) !Job {
         var pipe: [2]c.fd_t = undefined;
         if (c.pipe(&pipe) != 0) return error.StartupPipeFailed;
         errdefer _ = c.close(pipe[0]);
@@ -72,7 +84,8 @@ pub const Job = struct {
             if (setenv("COMPO_SOCKET", socket, 1) != 0 or setenv("COMPO_BIN", binary.ptr, 1) != 0) c._exit(127);
             // Pass the path as an argument, never interpolate it into shell text.
             const argv = [_:null]?[*:0]const u8{ "/bin/sh", "--", script.ptr };
-            _ = execv("/bin/sh", &argv);
+            const check_argv = [_:null]?[*:0]const u8{ "/bin/sh", "-n", "--", script.ptr };
+            _ = execv("/bin/sh", if (syntax_only) &check_argv else &argv);
             c._exit(127);
         }
         _ = c.setpgid(pid, pid);

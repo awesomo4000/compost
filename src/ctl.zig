@@ -6,6 +6,8 @@ const max_frame = @import("control_protocol.zig").max_frame;
 
 const usage =
     \\Usage: compo ctl [--socket PATH] [--quiet] COMMAND
+    \\  startup                show startup script, directory, and reload phase
+    \\  reload                 validate then replace windows using the startup script
     \\  list
     \\  create (--float X,Y,W,H | --tile) [options]
     \\  place WINDOW (--float X,Y,W,H | --tile) [placement options]
@@ -146,11 +148,11 @@ pub fn run(a: std.mem.Allocator, args: []const [:0]const u8) !u8 {
     i += 1;
     const stream = eql(verb, "stream");
     if (quiet and stream) return error.QuietStreamUnsupported;
-    var request: Request = .{ .op = try std.fmt.allocPrint(a, "window.{s}", .{verb}) };
+    var request: Request = .{ .op = if (eql(verb, "startup")) try a.dupe(u8, "startup.get") else if (eql(verb, "reload")) try a.dupe(u8, "startup.reload") else try std.fmt.allocPrint(a, "window.{s}", .{verb}) };
     defer a.free(request.op);
     const create = eql(verb, "create");
     const place = eql(verb, "place");
-    if (!create and !eql(verb, "list") and !stream) {
+    if (!create and !eql(verb, "list") and !eql(verb, "startup") and !eql(verb, "reload") and !stream) {
         var valid = place;
         for ([_][]const u8{ "get", "focus", "raise", "lower", "close" }) |op| if (eql(op, verb)) {
             valid = true;

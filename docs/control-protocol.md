@@ -254,3 +254,21 @@ child environment/cwd/PTY sizing, focus isolation, overlapping layers, exact and
 constrained placement, failed launches, name collisions, stale references, slot
 reuse, capacity, natural exit, and process/socket cleanup. Core tests separately
 check layer hit testing and occlusion. No test discovers an existing user host.
+
+### Startup metadata and reload
+
+`startup.get` returns `result.script` (absolute path or null), `result.cwd`
+(original startup directory or null), and `result.phase` (`initial`, `idle`,
+`validating`, or `reloading`). CLI: `compo ctl startup`.
+
+`startup.reload` starts shell syntax validation and returns the same metadata
+with phase `validating`. CLI: `compo ctl reload`. The response acknowledges the
+request, not successful completion; poll `startup.get` for the phase. Validation
+failure preserves existing windows. Validation success closes all windows and
+reruns the script on the same socket. Runtime failure leaves partial results
+available and reports a notice and stderr diagnostics; no rollback is attempted.
+The phase returns to `idle` on either success or failure.
+
+Both operations accept only `id` and `op`. No script yields `NoStartupScript`;
+an active startup/reload yields `StartupBusy`. Window references from before a
+successful replacement become stale.

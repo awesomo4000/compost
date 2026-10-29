@@ -2,6 +2,10 @@
 
 ## 10/29/2026
 
+- Documented session alternation when reloading layouts with tmm and untargeted tmux attach. Reproduced with real tmm even when its control clients attach before the visible client; left resolution for tmm investigation.
+
+- Added Ctrl-] r and control-socket startup metadata/reload commands. Remember the absolute init path and launch directory, check shell syntax before replacing windows, and keep the compositor available on reload failure. Recorded a shared startup/help modal on Ctrl-] ? or /.
+
 - Keep outer cursor visibility and shape stable across redraws, forwarding changes only when needed. Honor per-window synchronized updates with a one-second timeout; layout/focus changes cancel pending holds so geometry remains responsive. Added a real-PTY regression for fragmented updates, independent panes, visibility, shape, and timeout recovery.
 
 ## 10/28/2026

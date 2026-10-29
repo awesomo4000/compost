@@ -299,3 +299,47 @@ Palette colors use the embedded VT palette. Until outer-terminal default colors
 are queried, defaults use the embedded VT colors, initially black and white.
 Borders retain focus colors. Kitty images remain visible and untinted; image
 alpha composition and general translucent windows remain future work.
+
+### Reloading a startup layout
+
+Press **Ctrl-] r** to reread the original startup script and rebuild its windows.
+The selected path is stored as an absolute path; the compositor retains its
+original working directory. Edit the script, then reload to try a new layout.
+
+Reload first runs `/bin/sh -n` asynchronously. Missing/unreadable scripts and
+syntax errors leave existing windows intact. After validation, all existing
+windows close and the script runs again against the same control socket. Direct
+programs are stopped; tmux clients reconnect when the script launches them.
+Changes made interactively to the layout are not saved.
+
+A runtime failure leaves compo open with any windows created so far and a
+`[ reload failed ]` notice. There is no rollback after window replacement.
+Detailed diagnostics follow the normal stderr logging policy. A second reload
+is rejected while a startup script or validation is running. With no init script,
+the shortcut shows `[ no startup script ]`.
+
+`compo ctl startup` shows the script path, original directory, and phase.
+`compo ctl reload` requests the same asynchronous reload as the keyboard shortcut.
+
+### Known quirk: tmux session selection with tmm
+
+A layout that starts tmm alongside plain `tmux attach` can alternate between
+tmux sessions on successive reloads. Untargeted attach prefers unattached
+sessions before comparing recent activity. Tmm currently creates two tmux
+control-mode clients; those count as attachments and affect session activity.
+Consequently, plain attach is not a reliable way to restore the visible
+client's previous session.
+
+This was reproduced on an isolated tmux server with three sessions and the
+actual tmm binary: the visible client selected `a`, `c`, `a`, `c` across four
+starts. Waiting for both tmm control clients before starting the visible client
+still reproduced it. Testing the reverse order also alternated. Merely changing
+window creation order or adding an attachment readiness signal does not solve
+the session-selection issue.
+
+For now, the local `x/current-layout.sh` experiment starts tmm first and uses
+plain `tmux attach`; no session-preservation workaround is implemented in compo.
+Investigation of the control clients' effect belongs in tmm. An explicit
+`tmux attach -t SESSION` avoids automatic selection, but pins a session rather
+than remembering the user's latest choice. Any future session-restoration
+mechanism must also handle the remembered session disappearing before attach.

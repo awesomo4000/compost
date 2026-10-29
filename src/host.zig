@@ -5,8 +5,20 @@ const app = @import("root");
 const control = @import("control.zig");
 var control_server: ?control.Server = null;
 pub var startup_script: ?[:0]const u8 = null;
+pub var startup_directory: ?[:0]const u8 = null;
+pub var startup_phase: enum { initial, idle, validating, reloading } = .initial;
 pub var startup_binary: [:0]const u8 = "";
 var startup_job: ?@import("startup.zig").Job = null;
+pub fn requestReload() !void {
+    const script = startup_script orelse return error.NoStartupScript;
+    if (startup_job) |job| if (!job.done) return error.StartupBusy;
+    const job = try @import("startup.zig").Job.validate(script, startup_binary, &control_server.?.path);
+    if (startup_job) |*previous| previous.deinit();
+    startup_job = job;
+    startup_phase = .validating;
+    app.startupNotice("checking startup script");
+}
+
 // Darwin sys/ttycom.h: _IOW('t', 103, struct winsize).
 // std.c currently exposes only TIOCGWINSZ on Darwin.
 const set_winsize: u32 = if (@import("builtin").target.os.tag == .macos)
@@ -149,7 +161,25 @@ fn loop(ws: *c.winsize) c_int {
     var input_time: ?u64 = null;
     while (signalValue(&stopped).* == 0 and !quit_requested and (desktop or anyAlive())) {
         if (startup_job) |*job| if (job.check()) |status| {
-            if (status != 0) return status;
+            if (startup_phase == .initial) {
+                if (status != 0) return status;
+                startup_phase = .idle;
+            } else if (startup_phase == .validating and status == 0) {
+                // Validation finishes before touching the existing desktop.
+                app.closeAllWindows();
+                startup_job = @import("startup.zig").Job.start(startup_script.?, startup_binary, &control_server.?.path) catch {
+                    startup_phase = .idle;
+                    app.startupNotice("reload failed");
+                    dirty = true;
+                    continue;
+                };
+                startup_phase = .reloading;
+                app.startupNotice("reloading");
+            } else {
+                startup_phase = .idle;
+                app.startupNotice(if (status == 0) "reloaded" else "reload failed");
+            }
+            dirty = true;
         };
         if (app.compositor_tick(milliseconds())) dirty = true;
         if (signalValue(&resized).* != 0) {
@@ -235,6 +265,7 @@ pub fn run() c_int {
     desktop = startup_script != null or headless or c.getenv("COMPO_DESKTOP") != null or
         (c.getenv("COMPO_SINGLE") == null and c.getenv("COMPO_FLOAT") == null and
             c.getenv("COMPO_COMMAND") == null and c.getenv("COMPO_SIDEBAR_COMMAND") == null and c.getenv("COMPO_LEGACY") == null);
+    if (startup_script == null) startup_phase = .idle;
     count = if (desktop) 0 else if (c.getenv("COMPO_SINGLE") != null) 1 else if (c.getenv("COMPO_FLOAT") != null) 3 else 2;
     if (geometry(&ws) < 0 or ws.col == 0 or ws.row == 0) return 1;
     control_server = control.Server.init() catch {

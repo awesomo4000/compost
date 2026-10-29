@@ -3,7 +3,7 @@ const std = @import("std");
 pub const max_frame = 64 * 1024;
 pub const max_queue = 1024 * 1024;
 pub const max_pending = 64;
-pub const operations = [_][]const u8{ "window.list", "window.get", "window.create", "window.place", "window.focus", "window.raise", "window.lower", "window.close" };
+pub const operations = [_][]const u8{ "startup.get", "startup.reload", "window.list", "window.get", "window.create", "window.place", "window.focus", "window.raise", "window.lower", "window.close" };
 pub const Info = struct {
     instance: []const u8,
     columns: u16,
@@ -29,7 +29,7 @@ pub const Session = struct {
         };
         if (application_op and info.dispatch != null) {
             if (!self.ready) return failure(allocator, id, "handshake_required", "Send hello first");
-            return info.dispatch.?(allocator, parsed.value, info.instance) catch |err| failure(allocator, id, @errorName(err), "Window operation failed");
+            return info.dispatch.?(allocator, parsed.value, info.instance) catch |err| failure(allocator, id, @errorName(err), "Operation failed");
         }
         for (object.keys()) |key| {
             if (!std.mem.eql(u8, key, "id") and !std.mem.eql(u8, key, "op") and !(hello and std.mem.eql(u8, key, "version"))) return failure(allocator, id, "invalid_request", "Unknown request field");
