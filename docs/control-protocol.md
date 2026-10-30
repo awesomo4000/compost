@@ -272,3 +272,11 @@ The phase returns to `idle` on either success or failure.
 Both operations accept only `id` and `op`. No script yields `NoStartupScript`;
 an active startup/reload yields `StartupBusy`. Window references from before a
 successful replacement become stale.
+
+
+Window numbering: `window.create` accepts optional `number` (integer 1–10).
+An occupied number fails with `NumberInUse`; an out-of-range number fails with
+`InvalidNumber`. When omitted, the lowest available number is assigned, or
+`null` if all ten are occupied. Window information includes `number` alongside
+`name`. Numbers do not change on placement or focus; closing frees the number.
+The CLI exposes this as `ctl create --number N`.

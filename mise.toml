@@ -17,7 +17,7 @@ run = "zig build shell"
 
 [tasks.test-host]
 description = "Build and test the shell host in disposable PTYs"
-run = ["zig build -Doptimize=fast", "python3 tests/shell_host.py", "python3 tests/keys_host.py", "python3 tests/startup_command_host.py", "python3 tests/tui_host.py", "python3 tests/floating_host.py", "python3 tests/borders_host.py", "python3 tests/desktop_host.py", "python3 tests/title_host.py", "python3 tests/diagnostics_host.py", "python3 tests/pixel_mouse_host.py", "python3 tests/control_host.py", "python3 tests/control_windows.py", "python3 tests/control_cli.py", "python3 tests/startup_layout.py", "python3 tests/reload_layout.py", "python3 tests/cli_help.py", "python3 tests/window_navigation.py", "python3 tests/inactive_cursor.py", "python3 tests/cursor_updates.py", "python3 tests/scrollback_host.py", "python3 tests/clipboard_host.py"]
+run = ["zig build -Doptimize=fast", "python3 tests/shell_host.py", "python3 tests/keys_host.py", "python3 tests/startup_command_host.py", "python3 tests/tui_host.py", "python3 tests/floating_host.py", "python3 tests/borders_host.py", "python3 tests/desktop_host.py", "python3 tests/title_host.py", "python3 tests/shortcuts_host.py", "python3 tests/diagnostics_host.py", "python3 tests/pixel_mouse_host.py", "python3 tests/control_host.py", "python3 tests/control_windows.py", "python3 tests/control_cli.py", "python3 tests/startup_layout.py", "python3 tests/reload_layout.py", "python3 tests/cli_help.py", "python3 tests/window_navigation.py", "python3 tests/inactive_cursor.py", "python3 tests/cursor_updates.py", "python3 tests/scrollback_host.py", "python3 tests/clipboard_host.py"]
 
 [tasks.deps-check]
 description = "Check the rolling libghostty-vt asset and watched embedder hooks"

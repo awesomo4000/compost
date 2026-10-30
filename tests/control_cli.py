@@ -128,7 +128,9 @@ while True: signal.pause()
             cli("close", window["window"])
         assert cli("list")["result"]["windows"] == []
         cli("get", aid, ok=False)
-        only = cli("create", "--tile", "--", "/bin/cat")["result"]["window"]
+        only = cli("create", "--tile", "--number", "10", "--", "/bin/cat")["result"]["window"]
+        assert only["number"] == 10
+        cli("create", "--tile", "--number", "10", "--", "/bin/cat", ok=False)
         only = cli("place", only["window"], "--tile", "--edge", "left")["result"]["window"]
         assert only["rect"] == dict(x=0, y=0, w=120, h=40)
         cli("close", only["window"])

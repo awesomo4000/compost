@@ -2,6 +2,8 @@
 
 ## 10/30/2026
 
+- Add top-right help on prefix / or ?, stable numbered focus on 1–9/0, and toggled border number/name labels on prefix n. Share input and help bindings; expose automatic or requested window numbers through the control API and CLI.
+
 - Make the compositor prefix configurable with --prefix or COMPO_PREFIX, retaining Ctrl-] by default. Help labels and literal-prefix forwarding use the configured key.
 
 ## 10/29/2026

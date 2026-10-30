@@ -14,13 +14,9 @@ below remains the eventual target.
   clipping, and restoration into the initial terminal integration.
 - Extend the implemented text-cell preview tint to Kitty image blending and
   general translucent windows. Query outer-terminal default colors for theme matching.
-- Add a modal help screen on Ctrl-] ? and Ctrl-] /. Reuse the same help
-  title artwork as its header; keep help text out of the startup title screen.
-  Dismiss back to the current windows.
-- Add Ctrl-] , pane selection: show subtle `[1]`, `[2]`, etc. near the middle
-  of each pane's top border, then focus and raise the pane selected by number.
-  Escape cancels and selection removes the labels. Define multi-digit selection
-  for desktops with more than nine panes.
+- Implemented top-right help on prefix / or ?, stable window shortcuts 1-9/0,
+  and toggled centered number labels on prefix n. Windows beyond ten remain
+  accessible through focus cycling and control commands.
 - Startup layout scripts now run through the control socket using named targets,
   floats, targeted tiles, and per-window commands. Future layout export can
   generate these same operations; process persistence remains separate.

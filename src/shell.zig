@@ -5,6 +5,10 @@ const input = @import("input.zig");
 const docking = @import("docking.zig");
 const decoration = @import("frame.zig");
 const title = @import("title.zig");
+const help_panel = @import("help.zig");
+var help_visible = false;
+var numbers_visible = false;
+var missing_number: [32]u8 = undefined;
 var title_animation: title.Animator = .{};
 var title_frame: title.Frame = .{ .alpha = 0, .scatter = 1 };
 var title_mouse_release = false;
@@ -42,7 +46,7 @@ fn flushDiagnostics() void {
 const host = @import("host.zig");
 const Notice = struct { count: usize, action: enum { copied, pasted }, until: u64 };
 var paste_target: ?struct { id: ?core.Id, count: usize = 0, bracketed: bool = false } = null;
-const Slot = struct { sync_until: ?u64 = null, notice: ?Notice = null, browsing: bool = false, selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
+const Slot = struct { number: ?u8 = null, sync_until: ?u64 = null, notice: ?Notice = null, browsing: bool = false, selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
 var slots: [host.capacity]Slot = init: {
     var result: [host.capacity]Slot = undefined;
     for (&result, 0..) |*slot, index| slot.* = .{ .index = @intCast(index), .renderer = .{ .next_image = @intCast(index + 1), .image_stride = host.capacity, .framed = false, .bordered = true, .inactive_cursor = true } };
@@ -90,10 +94,6 @@ const usage =
     \\Startup: --init FILE, otherwise COMPO_INIT or ~/.config/compo/init.sh.
     \\XDG_CONFIG_HOME overrides ~/.config. --no-init disables startup scripts.
     \\Scripts run under /bin/sh with COMPO_BIN and COMPO_SOCKET, outside any pane.
-    \\{s} Enter: new shell    {s} Tab: focus next window    {s} q: quit
-    \\Alt-drag: move/dock        Ctrl-Alt-drag: free move         Border drag: resize
-    \\{s} r: reload startup script (replaces all windows)
-    \\{s} [: scrollback      {s} c: select mode           {s} y: copy
     \\
     \\Run compo ctl --help for per-window commands and placement options.
     \\COMPO_SOCKET selects the control socket for ctl and is inherited by children.
@@ -154,10 +154,13 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(1);
     };
     if (show_help) {
-        const label = decoder.prefix_key.label();
-        var buffer: [4096]u8 = undefined;
-        const text = try std.mem.print(&buffer, usage, .{ label, label, label, label, label, label, label });
-        if (host.display(text) != 0) return error.DisplayWriteFailed;
+        try display(usage);
+        var buffer: [256]u8 = undefined;
+        for (input.bindings) |binding| {
+            try display(try std.mem.print(&buffer, "{s} {s}: {s}\n", .{ decoder.prefix_key.label(), binding.label, binding.description }));
+        }
+        try display(try std.mem.print(&buffer, "{s} 1-9, 0: focus window 1-10\n{s} twice: send literal prefix\n", .{ decoder.prefix_key.label(), decoder.prefix_key.label() }));
+        try display("Alt-drag: move/dock; Ctrl-Alt-drag: free move; border drag: resize\n");
         return;
     }
     host.startup_script = try @import("startup.zig").findScript(init.arena.allocator(), init_path, no_init);
@@ -232,6 +235,7 @@ fn resize(cols: u16, rows: u16, cw: u16, ch: u16, requested_count: c_int) !void 
         count = @intCast(requested_count);
         scene = try core.Scene.init(root);
         for (slots[0..count], 0..) |*slot, i| {
+            slot.number = if (i < 10) @intCast(i + 1) else null;
             slot.id = try scene.add(if (i == 0 and count >= 2)
                 .{ .kind = .{ .docked = .{ .edge = .left, .extent = extent } }, .always_on_top = true }
             else if (i == 2)
@@ -292,6 +296,22 @@ fn cancelDrag() !void {
     restoreDrag();
     try applyLayout();
 }
+fn availableNumber(requested: ?u8) !?u8 {
+    if (requested) |n| {
+        if (n < 1 or n > 10) return error.InvalidNumber;
+        for (&slots) |slot| if (slot.surface != null and slot.number == @as(u8, @intCast(n))) return error.NumberInUse;
+        return n;
+    }
+    for (1..11) |n| {
+        var used = false;
+        for (&slots) |slot| if (slot.surface != null and slot.number == @as(u8, @intCast(n))) {
+            used = true;
+            break;
+        };
+        if (!used) return @intCast(n);
+    }
+    return null;
+}
 fn newShell() !void {
     if (drag != null) try cancelDrag();
     var free: ?*Slot = null;
@@ -300,6 +320,7 @@ fn newShell() !void {
         break;
     };
     const slot = free orelse return;
+    const number = try availableNumber(null);
     const area = scene.usable;
     if (area.w < 3 or area.h < 3) return;
     const w = @max(3, @divTrunc(area.w * 2, 3));
@@ -317,6 +338,7 @@ fn newShell() !void {
         slot.sync_until = null;
     }
     if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0 or !host.spawn(@intCast(slot.index), false)) return error.ChildSpawnFailed;
+    slot.number = number;
     try focus(slot.id);
     try applyLayout();
 }
@@ -347,7 +369,57 @@ fn event(_: *anyopaque, value: input.Event) !void {
         }
         return;
     }
+    if (help_visible) {
+        switch (value) {
+            .help => {
+                help_visible = false;
+                layout_dirty = true;
+            },
+            .bytes => |bytes| {
+                if (std.mem.eql(u8, bytes, "\x1b[200~")) title_paste = true;
+                if (std.mem.eql(u8, bytes, "\x1b")) {
+                    help_visible = false;
+                    layout_dirty = true;
+                }
+            },
+            .mouse => |mouse| {
+                if (!mouse.release and mouse.button & 96 == 0 and mouse.button & 3 != 3 and !help_panel.bounds(scene.root).contains(mouse.x, mouse.y)) {
+                    help_visible = false;
+                    layout_dirty = true;
+                    title_mouse_release = true;
+                }
+            },
+            else => {},
+        }
+        return;
+    }
     switch (value) {
+        .help => {
+            if (drag != null) try cancelDrag();
+            help_visible = true;
+            layout_dirty = true;
+        },
+        .numbers => {
+            numbers_visible = !numbers_visible;
+            layout_dirty = true;
+        },
+        .focus_number => |number| {
+            var target: ?*Slot = null;
+            for (&slots) |*slot| if (slot.surface != null and slot.number == number) {
+                target = slot;
+                break;
+            };
+            if (target) |slot| {
+                if (drag != null) try cancelDrag();
+                try scene.setVisible(slot.id, true);
+                try focus(slot.id);
+                try scene.raise(slot.id);
+                try applyLayout();
+            } else {
+                const text = try std.mem.print(&missing_number, "No window {d}", .{if (number == 10) @as(u8, 0) else number});
+                startupNotice(text);
+            }
+        },
         .new_shell => try newShell(),
         .scrollback => if (focused()) |slot| {
             slot.browsing = !slot.browsing;
@@ -749,7 +821,7 @@ fn draw() !void {
             s.terminal.modes.set(.synchronized_output, false);
             slot.sync_until = null;
         }
-        slot.renderer.occlusion = if (title_animation.active()) title.bounds(scene.root) else null;
+        slot.renderer.occlusion = if (title_animation.active()) title.bounds(scene.root) else if (help_visible) help_panel.bounds(scene.root) else null;
         slot.renderer.tint = if (title_animation.active()) .{ .bounds = scene.root, .color = .{ .r = 18, .g = 20, .b = 23 }, .alpha = 110 } else if (preview) |rect| .{ .bounds = rect } else null;
         const frame = try slot.renderer.draw(allocator, &render_scene, slot.id, s);
         try display(frame);
@@ -761,6 +833,20 @@ fn draw() !void {
         output.clearRetainingCapacity();
         for (&slots) |*slot| if (slot.surface != null) try decoration.draw(&output.writer, &render_scene, slot.id, if (hover_id == slot.id) hover_edge else null);
         for (&slots) |*slot| if (slot.surface != null) {
+            if (numbers_visible) if (slot.number) |number| {
+                var label_buffer: [160]u8 = undefined;
+                // Only printable ASCII names belong in terminal decorations.
+                const name = slot.name orelse "";
+                var safe = true;
+                for (name) |byte| if (byte < 32 or byte > 126) {
+                    safe = false;
+                    break;
+                };
+                const label = try std.mem.print(&label_buffer, "[{d}]{s}{s}", .{ if (number == 10) @as(u8, 0) else number, if (safe and name.len > 0) " " else "", if (safe) name else "" });
+                const width = scene.get(slot.id).?.bounds.w;
+                const shown = if (label.len > @as(usize, @intCast(@max(0, width - 4)))) label[0..3] else label;
+                try decoration.drawNumber(&output.writer, &render_scene, slot.id, shown);
+            };
             if (slot.notice) |notice| {
                 var buffer: [64]u8 = undefined;
                 const label = try std.mem.print(&buffer, "[ {d} {s} ]", .{ notice.count, @tagName(notice.action) });
@@ -786,6 +872,13 @@ fn draw() !void {
         try title.draw(&output.writer, scene.root, title_frame);
         try display(output.written());
     }
+    if (help_visible and (borders_dirty or layout_dirty or drawn_scene != scene.revision)) {
+        if (border_output == null) border_output = .init(allocator);
+        const output = &border_output.?;
+        output.clearRetainingCapacity();
+        try help_panel.draw(&output.writer, scene.root, decoder.prefix_key);
+        try display(output.written());
+    }
     // Capture clicks and drags even when the focused shell has not requested mouse input.
     // Paste markers are always requested so compositor shortcuts never interpret pasted data.
     if (!modes_initialized) {
@@ -793,7 +886,7 @@ fn draw() !void {
         modes_initialized = true;
     }
     var visible_cursor = false;
-    if (!title_animation.active()) if (focused()) |slot| {
+    if (!title_animation.active() and !help_visible) if (focused()) |slot| {
         const application_keys = slot.surface.?.terminal.modes.get(.cursor_keys);
         if (cursor_keys != application_keys) {
             try display(if (application_keys) "\x1b[?1h" else "\x1b[?1l");
@@ -860,6 +953,7 @@ pub fn compositor_exit(index: c_int) c_int {
     if (slot.name) |name| allocator.free(name);
     if (slot.command) |command| allocator.free(command);
     slot.name = null;
+    slot.number = null;
     slot.command = null;
     const next_image = slot.renderer.next_image;
     slot.renderer.deinit(allocator);
@@ -914,6 +1008,7 @@ const ControlRequest = struct {
     op: []const u8,
     window: ?[]const u8 = null,
     name: ?[]const u8 = null,
+    number: ?u8 = null,
     argv: ?[]const []const u8 = null,
     command: ?[]const u8 = null,
     shell: ?[]const u8 = null,
@@ -925,6 +1020,7 @@ const ControlRequest = struct {
 const WindowInfo = struct {
     window: []const u8,
     name: ?[]const u8,
+    number: ?u8,
     command: ?[]const u8,
     state: []const u8 = "running",
     rect: core.Rect,
@@ -945,6 +1041,7 @@ fn windowInfo(a: std.mem.Allocator, instance: []const u8, slot: *const Slot) !Wi
     return .{
         .window = try std.fmt.allocPrint(a, "{s}/{d}", .{ instance, slot.id }),
         .name = slot.name,
+        .number = slot.number,
         .command = slot.command,
         .rect = w.bounds,
         .content = decoration.contentFor(&scene, slot.id),
@@ -1077,7 +1174,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         if ((create or place) and std.mem.eql(u8, key, "placement")) continue;
         if (create) {
             var allowed = false;
-            for ([_][]const u8{ "name", "argv", "command", "shell", "cwd", "env", "focus" }) |field| if (std.mem.eql(u8, key, field)) {
+            for ([_][]const u8{ "number", "name", "argv", "command", "shell", "cwd", "env", "focus" }) |field| if (std.mem.eql(u8, key, field)) {
                 allowed = true;
             };
             if (allowed) continue;
@@ -1099,6 +1196,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
     if (drag != null and !get) return error.DragInProgress;
     var slot: *Slot = undefined;
     if (create) {
+        const number = try availableNumber(req.number);
         const argv = try controlArgv(temp, req);
         if (argv.len == 0 or argv.len > 128 or argv[0].len == 0 or argv[0].len > 512 or argv[0][0] != '/') return error.InvalidArgv;
         var total: usize = 0;
@@ -1141,6 +1239,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         slot.id = id;
         slot.surface = s;
         slot.name = name;
+        slot.number = number;
         slot.command = command;
         slot.floating_bounds = null;
         slot.drawn_revision = null;
@@ -1198,6 +1297,7 @@ pub fn startupNotice(text: []const u8) void {
     control_dirty = true;
 }
 pub fn replayTitle() void {
+    help_visible = false;
     if (!title_enabled) return;
     title_animation = .{};
     title_frame = .{ .alpha = 0, .scatter = 1 };

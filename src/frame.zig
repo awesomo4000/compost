@@ -215,12 +215,18 @@ test "corner handles resize both edges and keep the opposite corner fixed" {
 /// Transient ASCII label on the actual top border, including a shared divider.
 /// Skip a label that cannot fit or is partly covered rather than painting content.
 pub fn drawNotice(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, label: []const u8) !void {
+    return drawLabel(w, scene, id, label, false);
+}
+pub fn drawNumber(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, label: []const u8) !void {
+    return drawLabel(w, scene, id, label, true);
+}
+fn drawLabel(w: *std.Io.Writer, scene: *const core.Scene, id: core.Id, label: []const u8, centered: bool) !void {
     const window = scene.get(id) orelse return;
     const r = window.bounds;
     if (!window.visible or !hasBorder(r) or label.len > @as(usize, @intCast(@max(0, r.w - 4)))) return;
     const shared = sharesTop(scene, id);
     const y = r.y - @as(i32, if (shared) 1 else 0);
-    const x = r.right() - @as(i32, @intCast(label.len)) - 2;
+    const x = if (centered) r.x + @divTrunc(r.w - @as(i32, @intCast(label.len)), 2) else r.right() - @as(i32, @intCast(label.len)) - 2;
     for (0..label.len) |i| {
         const px = x + @as(i32, @intCast(i));
         const owner = scene.hitTest(px, y) orelse return;

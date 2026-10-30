@@ -380,3 +380,25 @@ Enter, and Ctrl-h is Backspace on some terminals, so choose with care.
 Press the configured prefix twice to send it literally to the child. Prefix
 bytes inside bracketed paste pass through unchanged. Prefix configuration is
 read at process startup; reloading the layout does not change it.
+
+
+### Window shortcuts and help
+
+Prefix `/` or `?` toggles a compact help panel in the top-right. Escape or an
+outside click dismisses it without sending dismissal input to the shell.
+Its binding descriptions come from the input dispatch table and show your
+configured prefix. Children continue running behind the panel.
+
+Prefix `1` through `9`, then `0`, focuses and raises windows numbered 1 through
+10 within their existing layers. Prefix `n` toggles muted, centered `[1] name`
+labels on the borders. Labels remain enabled until toggled off. Names that
+cannot safely be displayed as ASCII are omitted from labels.
+
+Each new window takes the lowest free number, or remains unnumbered if all ten
+are assigned. Closing a window frees its number without renumbering others.
+Numbers survive moves, docking, and focus changes. Startup scripts can choose
+stable numbers with `compo ctl create --tile --name main --number 1`.
+`ctl list` reports both `name` and `number`; `null` means unnumbered. Duplicate
+names/numbers and numbers outside 1–10 are rejected before launching a child.
+The number 10 uses the `0` shortcut and `[0]` label. Prefix shortcuts are
+consumed while help is open, except the help shortcut itself.

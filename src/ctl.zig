@@ -16,7 +16,7 @@ const usage =
     \\Window targets accept a unique name, name:NAME, or an exact instance/id reference.
     \\--quiet suppresses successful replies; errors still print and exit nonzero.
     \\Options:
-    \\  --name NAME --cwd PATH --shell PATH --command TEXT --focus
+    \\  --name NAME --number 1..10 --cwd PATH --shell PATH --command TEXT --focus
     \\  --target WINDOW --edge left|right|top|bottom --ratio BASIS_POINTS
     \\  --layer INTEGER --constrain
     \\  -- /absolute/program args...     direct process, no shell afterward
@@ -43,6 +43,7 @@ const Request = struct {
     op: []const u8,
     window: ?[]const u8 = null,
     name: ?[]const u8 = null,
+    number: ?u8 = null,
     cwd: ?[]const u8 = null,
     shell: ?[]const u8 = null,
     command: ?[]const u8 = null,
@@ -200,6 +201,8 @@ pub fn run(a: std.mem.Allocator, args: []const [:0]const u8) !u8 {
             placement.ratio = try std.fmt.parseInt(u16, value, 10);
         } else if (eql(flag, "--layer")) {
             placement.layer = try std.fmt.parseInt(i32, value, 10);
+        } else if (create and eql(flag, "--number")) {
+            request.number = try std.fmt.parseInt(u8, value, 10);
         } else if (create and eql(flag, "--name")) {
             request.name = value;
         } else if (create and eql(flag, "--cwd")) {

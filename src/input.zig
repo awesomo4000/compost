@@ -1,8 +1,22 @@
 //! Incremental outer-terminal input framing, independent of PTYs and window policy.
 const std = @import("std");
 pub const Mouse = struct { button: u16, x: u16, y: u16, release: bool };
-pub const Event = union(enum) { bytes: []const u8, mouse: Mouse, toggle_focus, toggle_float, new_shell, scrollback, select_mode, copy_selection, reload, quit, focus: bool };
+pub const Event = union(enum) { bytes: []const u8, mouse: Mouse, toggle_focus, toggle_float, new_shell, scrollback, select_mode, copy_selection, reload, quit, help, numbers, focus_number: u8, focus: bool };
 pub const Sink = struct { context: *anyopaque, emit: *const fn (*anyopaque, Event) anyerror!void };
+pub const Binding = struct { key: u8, label: []const u8, description: []const u8, event: Event };
+pub const bindings = [_]Binding{
+    .{ .key = '\r', .label = "Enter", .description = "new shell", .event = .new_shell },
+    .{ .key = '\t', .label = "Tab", .description = "focus next window", .event = .toggle_focus },
+    .{ .key = 'f', .label = "f", .description = "toggle floating window", .event = .toggle_float },
+    .{ .key = '[', .label = "[", .description = "scrollback", .event = .scrollback },
+    .{ .key = 'c', .label = "c", .description = "select mode", .event = .select_mode },
+    .{ .key = 'y', .label = "y", .description = "copy selection", .event = .copy_selection },
+    .{ .key = 'r', .label = "r", .description = "reload startup script", .event = .reload },
+    .{ .key = 'n', .label = "n", .description = "toggle window numbers", .event = .numbers },
+    .{ .key = '/', .label = "/ or ?", .description = "toggle help", .event = .help },
+    .{ .key = 'q', .label = "q", .description = "quit", .event = .quit },
+};
+
 /// A single control byte; Escape is reserved for terminal sequence framing.
 pub const Prefix = struct {
     byte: u8 = 0x1d,
@@ -72,38 +86,18 @@ pub const Decoder = struct {
                     try sink.emit(sink.context, .{ .bytes = &.{self.prefix_key.byte} });
                     continue;
                 }
-                if (byte == '\t') {
-                    try sink.emit(sink.context, .toggle_focus);
+                if (byte >= '0' and byte <= '9') {
+                    try sink.emit(sink.context, .{ .focus_number = if (byte == '0') 10 else byte - '0' });
                     continue;
                 }
-                if (byte == '\r' or byte == '\n') {
-                    try sink.emit(sink.context, .new_shell);
-                    continue;
-                }
-                if (byte == '[') {
-                    try sink.emit(sink.context, .scrollback);
-                    continue;
-                }
-                if (byte == 'c') {
-                    try sink.emit(sink.context, .select_mode);
-                    continue;
-                }
-                if (byte == 'y') {
-                    try sink.emit(sink.context, .copy_selection);
-                    continue;
-                }
-                if (byte == 'r') {
-                    try sink.emit(sink.context, .reload);
-                    continue;
-                }
-                if (byte == 'q') {
-                    try sink.emit(sink.context, .quit);
-                    continue;
-                }
-                if (byte == 'f') {
-                    try sink.emit(sink.context, .toggle_float);
-                    continue;
-                }
+                const key = if (byte == '\n') '\r' else if (byte == '?') '/' else byte;
+                var matched = false;
+                for (bindings) |binding| if (binding.key == key) {
+                    try sink.emit(sink.context, binding.event);
+                    matched = true;
+                    break;
+                };
+                if (matched) continue;
                 try sink.emit(sink.context, .{ .bytes = &.{self.prefix_key.byte} });
             }
             if (!self.pasting and byte == self.prefix_key.byte) {
@@ -153,7 +147,7 @@ test "fragmented mouse, focus shortcut, paste, and Escape framing" {
                 .bytes => |bytes| try self.bytes.appendSlice(std.testing.allocator, bytes),
                 .mouse => |mouse| self.mouse = mouse,
                 .toggle_focus => self.toggles += 1,
-                .focus, .toggle_float, .new_shell, .scrollback, .select_mode, .copy_selection, .reload, .quit => {},
+                .help, .numbers, .focus_number, .focus, .toggle_float, .new_shell, .scrollback, .select_mode, .copy_selection, .reload, .quit => {},
             }
         }
     };
@@ -243,4 +237,29 @@ test "prefix parsing and display labels" {
     }
     try std.testing.expectEqualStrings("Ctrl-]", &(Prefix{}).label());
     for ([_][]const u8{ "", "a", "Alt-a", "Ctrl-[", "Ctrl-aa", "Ctrl-?" }) |name| try std.testing.expectError(error.InvalidPrefix, Prefix.parse(name));
+}
+
+test "every advertised binding dispatches and keys are unique" {
+    const Recorder = struct {
+        expected: Event,
+        count: usize = 0,
+        fn emit(ctx: *anyopaque, event: Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            try std.testing.expectEqualDeep(self.expected, event);
+            self.count += 1;
+        }
+    };
+    for (bindings, 0..) |binding, i| {
+        for (bindings[i + 1 ..]) |other| try std.testing.expect(binding.key != other.key);
+        var decoder: Decoder = .{};
+        var recorder: Recorder = .{ .expected = binding.event };
+        try decoder.feed(&.{ decoder.prefix_key.byte, binding.key }, .{ .context = &recorder, .emit = Recorder.emit });
+        try std.testing.expectEqual(@as(usize, 1), recorder.count);
+    }
+    for ("1234567890?", 0..) |key, i| {
+        var decoder: Decoder = .{};
+        var recorder: Recorder = .{ .expected = if (key == '?') .help else .{ .focus_number = @intCast(i + 1) } };
+        try decoder.feed(&.{ decoder.prefix_key.byte, key }, .{ .context = &recorder, .emit = Recorder.emit });
+        try std.testing.expectEqual(@as(usize, 1), recorder.count);
+    }
 }
