@@ -3,10 +3,28 @@ const std = @import("std");
 pub const Mouse = struct { button: u16, x: u16, y: u16, release: bool };
 pub const Event = union(enum) { bytes: []const u8, mouse: Mouse, toggle_focus, toggle_float, new_shell, scrollback, select_mode, copy_selection, reload, quit, focus: bool };
 pub const Sink = struct { context: *anyopaque, emit: *const fn (*anyopaque, Event) anyerror!void };
+/// A single control byte; Escape is reserved for terminal sequence framing.
+pub const Prefix = struct {
+    byte: u8 = 0x1d,
+
+    pub fn parse(name: []const u8) !Prefix {
+        const key = if (std.ascii.startsWithIgnoreCase(name, "Ctrl-")) name[5..] else if (std.ascii.startsWithIgnoreCase(name, "C-")) name[2..] else return error.InvalidPrefix;
+        if (key.len != 1) return error.InvalidPrefix;
+        const letter = std.ascii.toUpper(key[0]);
+        if (letter < '@' or letter > '_' or letter == '[') return error.InvalidPrefix;
+        return .{ .byte = letter & 0x1f };
+    }
+
+    pub fn label(self: Prefix) [6]u8 {
+        return .{ 'C', 't', 'r', 'l', '-', if (self.byte >= 1 and self.byte <= 26) self.byte + 'a' - 1 else self.byte + '@' };
+    }
+};
+
 pub const Decoder = struct {
     pending: [128]u8 = undefined,
     len: usize = 0,
     prefix: bool = false,
+    prefix_key: Prefix = .{},
     pasting: bool = false,
 
     pub fn feed(self: *Decoder, bytes: []const u8, sink: Sink) !void {
@@ -15,9 +33,9 @@ pub const Decoder = struct {
             const byte = bytes[index];
             index += 1;
             // Keep ordinary typing and paste payloads batched for the PTY writer.
-            if (self.len == 0 and !self.prefix and byte != 0x1b and (self.pasting or byte != 0x1d)) {
+            if (self.len == 0 and !self.prefix and byte != 0x1b and (self.pasting or byte != self.prefix_key.byte)) {
                 const start = index - 1;
-                while (index < bytes.len and bytes[index] != 0x1b and (self.pasting or bytes[index] != 0x1d)) : (index += 1) {}
+                while (index < bytes.len and bytes[index] != 0x1b and (self.pasting or bytes[index] != self.prefix_key.byte)) : (index += 1) {}
                 try sink.emit(sink.context, .{ .bytes = bytes[start..index] });
                 continue;
             }
@@ -50,6 +68,10 @@ pub const Decoder = struct {
             }
             if (!self.pasting and self.prefix) {
                 self.prefix = false;
+                if (byte == self.prefix_key.byte) {
+                    try sink.emit(sink.context, .{ .bytes = &.{self.prefix_key.byte} });
+                    continue;
+                }
                 if (byte == '\t') {
                     try sink.emit(sink.context, .toggle_focus);
                     continue;
@@ -82,10 +104,9 @@ pub const Decoder = struct {
                     try sink.emit(sink.context, .toggle_float);
                     continue;
                 }
-                try sink.emit(sink.context, .{ .bytes = "\x1d" });
-                if (byte == 0x1d) continue;
+                try sink.emit(sink.context, .{ .bytes = &.{self.prefix_key.byte} });
             }
-            if (!self.pasting and byte == 0x1d) {
+            if (!self.pasting and byte == self.prefix_key.byte) {
                 self.prefix = true;
                 continue;
             }
@@ -186,4 +207,40 @@ test "CSI and SS3 keys remain atomic across reads and idle gaps" {
     try decoder.feed("\x1b", sink);
     try decoder.idle(sink);
     try std.testing.expectEqual(@as(usize, 1), recorder.calls);
+}
+
+test "configured prefix routes shortcuts, literals, unknown keys and paste" {
+    const Recorder = struct {
+        bytes: std.ArrayList(u8) = .empty,
+        toggles: usize = 0,
+        fn emit(ctx: *anyopaque, event: Event) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            switch (event) {
+                .bytes => |bytes| try self.bytes.appendSlice(std.testing.allocator, bytes),
+                .toggle_focus => self.toggles += 1,
+                else => return error.UnexpectedEvent,
+            }
+        }
+    };
+    var recorder: Recorder = .{};
+    defer recorder.bytes.deinit(std.testing.allocator);
+    var decoder: Decoder = .{ .prefix_key = try Prefix.parse("C-a") };
+    const sink: Sink = .{ .context = &recorder, .emit = Recorder.emit };
+    for ("\x01\t\x01\x01\x01z\x1d\x1b[200~\x01\t\x1b[201~") |byte| try decoder.feed(&.{byte}, sink);
+    try std.testing.expectEqual(@as(usize, 1), recorder.toggles);
+    try std.testing.expectEqualStrings("\x01\x01z\x1d\x1b[200~\x01\t\x1b[201~", recorder.bytes.items);
+    decoder.prefix_key = try Prefix.parse("Ctrl-i");
+    try decoder.feed("\t\t", sink);
+    try std.testing.expectEqual(@as(usize, 1), recorder.toggles);
+    try std.testing.expectEqual(@as(u8, '\t'), recorder.bytes.items[recorder.bytes.items.len - 1]);
+}
+
+test "prefix parsing and display labels" {
+    for ([_][]const u8{ "C-a", "Ctrl-A", "ctrl-a" }) |name| {
+        const key = try Prefix.parse(name);
+        try std.testing.expectEqual(@as(u8, 1), key.byte);
+        try std.testing.expectEqualStrings("Ctrl-a", &key.label());
+    }
+    try std.testing.expectEqualStrings("Ctrl-]", &(Prefix{}).label());
+    for ([_][]const u8{ "", "a", "Alt-a", "Ctrl-[", "Ctrl-aa", "Ctrl-?" }) |name| try std.testing.expectError(error.InvalidPrefix, Prefix.parse(name));
 }

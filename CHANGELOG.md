@@ -1,6 +1,14 @@
 # Changelog
 
+## 10/30/2026
+
+- Make the compositor prefix configurable with --prefix or COMPO_PREFIX, retaining Ctrl-] by default. Help labels and literal-prefix forwarding use the configured key.
+
 ## 10/29/2026
+
+- Rounded both title-art o glyphs with symmetric outlines and counters at every supported size, and balanced the c top and bottom. Successful reload validation now replays the title animation; --no-title skips both startup and reload animation.
+
+- Added a procedural Zig COMPO title modal over empty and scripted startups, without startup help. Tiles settle on entry and drift/fade on dismissal; consume dismissal input, clip underlying terminal content, and restore it afterward. Added --no-title, compact wordmark fallback, and idle animation suppression.
 
 - Documented session alternation when reloading layouts with tmm and untargeted tmux attach. Reproduced with real tmm even when its control clients attach before the visible client; left resolution for tmm investigation.
 

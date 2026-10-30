@@ -20,7 +20,7 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-desktop-', dir='/tmp') as direct
     def send(data):
         os.write(host.master, data)
     try:
-        host.until(lambda: b'Ctrl-]' in host.text())
+        host.until(lambda: b'\x1b[2J' in host.data)
         assert not sizes()
         send(b'\x1d\r')
         host.until(lambda: b'[51, 14]' in sizes())
@@ -46,7 +46,7 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-desktop-', dir='/tmp') as direct
         # Closing the last child leaves a usable desktop; reuse its slot.
         host.data.clear()
         send(b'!')
-        host.until(lambda: b'Ctrl-]' in host.text())
+        host.until(lambda: b'\x1b[2J' in host.data)
         assert host.process.poll() is None
         old = sizes()
         send(b'\x1d\r')
@@ -75,7 +75,7 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-docking-', dir='/tmp') as direct
     def move(x, y, tx, ty, control=False):
         send(f'\x1b[<8;{x};{y}M\x1b[<{48 if control else 40};{tx};{ty}M\x1b[<8;{tx};{ty}m'.encode())
     try:
-        host.until(lambda: b'Ctrl-]' in host.text())
+        host.until(lambda: b'\x1b[2J' in host.data)
         a = create()
         move(20, 8, 1, 12)
         sized(a, [38, 22])

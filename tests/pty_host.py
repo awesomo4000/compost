@@ -17,7 +17,7 @@ BINARY = Path(__file__).resolve().parents[1] / "zig-out/bin/compo"
 
 
 class Host:
-    def __init__(self, command, sidebar=None, floating=None, desktop=False, border_style="plain", args=None, env_overrides=None):
+    def __init__(self, command, sidebar=None, floating=None, desktop=False, border_style="plain", args=None, env_overrides=None, title=False):
         self.master, self.slave = pty.openpty()
         self.resize(24, 80)
         self.original = termios.tcgetattr(self.slave)
@@ -39,7 +39,7 @@ class Host:
             env["COMPO_FLOAT_COMMAND"] = floating
         if env_overrides:
             env.update(env_overrides)
-        self.process = subprocess.Popen([str(BINARY), *(args if args is not None else ["--no-init"])], stdin=self.slave,
+        self.process = subprocess.Popen([str(BINARY), *([] if title else ["--no-title"]), *(args if args is not None else ["--no-init"])], stdin=self.slave,
                                         stdout=self.slave, stderr=self.slave,
                                         env=env, start_new_session=True)
 

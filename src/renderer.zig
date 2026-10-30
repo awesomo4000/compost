@@ -30,6 +30,8 @@ pub const Renderer = struct {
     inactive_cursor: bool = false,
     previous_cursor: ?CursorCell = null,
     tint: ?Tint = null,
+    occlusion: ?core.Rect = null,
+    previous_occlusion: ?core.Rect = null,
     previous_tint: ?Tint = null,
     state: vt.RenderState = .empty,
     images: std.AutoHashMapUnmanaged(u32, u32) = .{},
@@ -71,9 +73,16 @@ pub const Renderer = struct {
     /// Borrowed frame, valid until the next draw or deinit. Use the same allocator throughout.
     pub fn draw(self: *Renderer, allocator: std.mem.Allocator, scene: *const core.Scene, id: core.Id, surface: *terminal.Surface) ![]const u8 {
         try self.state.update(allocator, &surface.terminal);
+        if (!std.meta.eql(self.occlusion, self.previous_occlusion)) {
+            self.region_scene = null;
+            self.text_scene = null;
+            self.image_scene = null;
+            self.previous_occlusion = self.occlusion;
+        }
         if (!std.meta.eql(self.tint, self.previous_tint)) self.row_ids.clearRetainingCapacity();
         if (self.region_scene != scene.revision or self.region_id != id) {
             var region = try scene.visibleRegion(allocator, id);
+            errdefer region.deinit(allocator);
             if (self.bordered) {
                 const inner = decoration.contentFor(scene, id);
                 var kept: usize = 0;
@@ -82,6 +91,17 @@ pub const Renderer = struct {
                     kept += 1;
                 };
                 region.items.len = kept;
+            }
+            if (self.occlusion) |cover| {
+                var clipped: std.ArrayList(core.Rect) = .empty;
+                errdefer clipped.deinit(allocator);
+                for (region.items) |rect| {
+                    var parts: [4]core.Rect = undefined;
+                    const n = rect.subtract(cover, &parts);
+                    try clipped.appendSlice(allocator, parts[0..n]);
+                }
+                region.deinit(allocator);
+                region = clipped;
             }
             self.region.deinit(allocator);
             self.region = region;
@@ -694,4 +714,23 @@ test "selection preserves wide graphemes and soft wraps and restores highlightin
     try std.testing.expect(std.mem.indexOf(u8, cleared, "世界") != null);
     try std.testing.expect(std.mem.indexOf(u8, cleared, "\x1b[7m") == null);
     try std.testing.expect((try source.selectionText(a)) == null);
+}
+
+test "modal occlusion clips content and restores it without a scene change" {
+    const a = std.testing.allocator;
+    var context: u8 = 0;
+    const source = try terminal.Surface.create(std.testing.io, a, .{ .columns = 8, .rows = 3 }, .{ .context = &context, .write = discard });
+    defer source.destroy();
+    try source.feed("ABCDEFGH");
+    var scene = try core.Scene.init(try core.Rect.init(0, 0, 8, 3));
+    const id = try scene.add(.{ .kind = .tiled });
+    var renderer: Renderer = .{ .framed = false, .occlusion = .{ .x = 2, .y = 0, .w = 3, .h = 3 } };
+    defer renderer.deinit(a);
+    const covered = try renderer.draw(a, &scene, id, source);
+    try std.testing.expect(std.mem.indexOf(u8, covered, "AB") != null);
+    try std.testing.expect(std.mem.indexOf(u8, covered, "CDE") == null);
+    try std.testing.expect(std.mem.indexOf(u8, covered, "FGH") != null);
+    renderer.occlusion = null;
+    const restored = try renderer.draw(a, &scene, id, source);
+    try std.testing.expect(std.mem.indexOf(u8, restored, "ABCDEFGH") != null);
 }

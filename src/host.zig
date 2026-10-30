@@ -167,6 +167,7 @@ fn loop(ws: *c.winsize) c_int {
             } else if (startup_phase == .validating and status == 0) {
                 // Validation finishes before touching the existing desktop.
                 app.closeAllWindows();
+                app.replayTitle();
                 startup_job = @import("startup.zig").Job.start(startup_script.?, startup_binary, &control_server.?.path) catch {
                     startup_phase = .idle;
                     app.startupNotice("reload failed");

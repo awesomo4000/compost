@@ -16,3 +16,17 @@ for arguments in (("--help",), ("-h",), ("ctl", "--help"), ("ctl", "-h")):
     assert b"\x1b" not in result.stdout
     assert b"COMPO_SOCKET=/tmp/" not in result.stdout
 print("CLI help: both help flags work without a PTY or control socket.")
+
+for arguments, configured, expected in (
+    (("--help",), "ctrl-]", b"Ctrl-]"),
+    (("--help", "--prefix", "ctrl-b"), "ctrl-]", b"Ctrl-b"),
+    (("--prefix", "C-b", "--help"), "invalid", b"Ctrl-b"),
+):
+    result = subprocess.run([str(binary), *arguments], env=dict(env, COMPO_PREFIX=configured), capture_output=True, timeout=5)
+    assert result.returncode == 0, result.stderr
+    assert expected + b" Enter: new shell" in result.stdout
+    assert expected + b" r: reload" in result.stdout
+for arguments in (("--prefix",), ("--prefix", "Ctrl-["), ("--prefix", "nope")):
+    result = subprocess.run([str(binary), *arguments], env=env, capture_output=True, timeout=5)
+    assert result.returncode != 0
+print("Configured prefix: environment, CLI override, help labels and invalid values passed.")

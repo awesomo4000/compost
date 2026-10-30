@@ -124,7 +124,7 @@ exit 17
     display = Host("sleep 60", desktop=True, args=["--no-init"],
                    env_overrides=dict(overrides, COMPO_INIT=str(root / "missing-env-script")))
     try:
-        display.until(lambda: b"Ctrl-]" in display.text())
+        display.until(lambda: b'\x1b[2J' in display.data)
         assert not ready.exists()
         os.write(display.master, b"\x1dq")
         display.finish(0)

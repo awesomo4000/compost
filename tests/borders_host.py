@@ -89,7 +89,7 @@ with tempfile.TemporaryDirectory(prefix='compo-aurora-', dir='/tmp') as director
     command = shlex.join([sys.executable, str(Path(__file__).with_name('float_child.py')), 'AURORA', directory])
     host = Host(command, desktop=True, border_style='aurora')
     try:
-        host.until(lambda: b'Ctrl-]' in host.text())
+        host.until(lambda: b'\x1b[2J' in host.data)
         os.write(host.master, b'\x1d\r')
         host.until(lambda: b'AURORA01' in host.text())
         for corner in ('╭', '╮', '╰', '╯'):

@@ -343,3 +343,40 @@ Investigation of the control clients' effect belongs in tmm. An explicit
 `tmux attach -t SESSION` avoids automatic selection, but pins a session rather
 than remembering the user's latest choice. Any future session-restoration
 mechanism must also handle the remembered session disappearing before attach.
+
+### Startup title
+
+Startup shows a centered COMPO tile-art modal over either an empty desktop or
+a scripted layout. Tiles settle into place over 700 ms. Any key or click
+dismisses it with a short 280 ms drift-and-fade; the dismissal input, paste, and
+mouse release do not reach the underlying shell. Hover alone does not dismiss.
+The modal has no startup help text. Reload replays the animation after the
+script passes validation. `--no-title` skips it on startup and reload.
+
+Children continue running while the modal is visible. Terminal content is
+subdued and clipped around the panel; it is restored when the panel closes.
+Animation stops completely once the title settles. Small terminals use a
+centered `compo` wordmark.
+
+`src/title.zig` contains the tile rectangles, glyph contours, palette, half-cell
+rasterizer, and entrance/exit animator, ported from the supplied
+`x/ansi-art/compo.py`. There are no embedded image files or runtime Python
+dependencies. The modal is a display/input overlay, not a managed PTY window.
+
+
+### Prefix configuration
+
+The default prefix is Ctrl-]. Set `COMPO_PREFIX=ctrl-]` or launch with
+`compo --prefix ctrl-]` to change it. The command-line option overrides the
+environment variable. `C-]` notation is also accepted. Key names are case-insensitive, so
+`ctrl-]`, `Ctrl-]`, and `CTRL-]` all work.
+Help (`compo --help`) shows shortcuts using the selected prefix. Shortcut
+examples elsewhere in this document use the default.
+
+Supported keys are Ctrl-a through Ctrl-z and Ctrl-@, Ctrl-\, Ctrl-], Ctrl-^,
+and Ctrl-_. Ctrl-[ (Escape) is reserved for terminal escape sequences.
+Control keys share bytes with some ordinary keys: Ctrl-i is Tab, Ctrl-m is
+Enter, and Ctrl-h is Backspace on some terminals, so choose with care.
+Press the configured prefix twice to send it literally to the child. Prefix
+bytes inside bracketed paste pass through unchanged. Prefix configuration is
+read at process startup; reloading the layout does not change it.

@@ -33,6 +33,13 @@ pub fn build(b: *std.Build) void {
     }) });
     test_step.dependOn(&b.addRunArtifact(control_tests).step);
     b.step("test-control", "Test control protocol contracts").dependOn(&b.addRunArtifact(control_tests).step);
+    const title_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/title.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "compositor", .module = core }},
+    }) });
+    test_step.dependOn(&b.addRunArtifact(title_tests).step);
     const vt = b.dependency("ghostty_vt", .{
         .target = target,
         .optimize = optimize,

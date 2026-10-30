@@ -4,6 +4,12 @@ const terminal = @import("terminal");
 const input = @import("input.zig");
 const docking = @import("docking.zig");
 const decoration = @import("frame.zig");
+const title = @import("title.zig");
+var title_animation: title.Animator = .{};
+var title_frame: title.Frame = .{ .alpha = 0, .scatter = 1 };
+var title_mouse_release = false;
+var title_enabled = true;
+var title_paste = false;
 const Renderer = @import("renderer.zig").Renderer;
 pub const std_options: std.Options = .{ .log_level = .warn, .logFn = logDiagnostic };
 // Never let dependency diagnostics bypass composition onto the live terminal.
@@ -74,17 +80,20 @@ const allocator = std.heap.smp_allocator;
 var trace_mouse = false;
 var startup_notice: ?struct { text: []const u8, until: u64 } = null;
 const usage =
-    \\Usage: compo [--init FILE | --no-init] [--help|-h]
+    \\Usage: compo [--init FILE | --no-init] [--no-title] [--prefix KEY] [--help|-h]
     \\       compo ctl [--socket PATH] COMMAND
     \\
     \\With no arguments, open the compositor desktop.
+    \\--prefix KEY overrides COMPO_PREFIX (default Ctrl-]); e.g. ctrl-] or C-].
+    \\Use Ctrl-a through Ctrl-z, Ctrl-@, Ctrl-\, Ctrl-], Ctrl-^, or Ctrl-_.
+    \\--no-title skips the startup modal. Any key or click dismisses it otherwise.
     \\Startup: --init FILE, otherwise COMPO_INIT or ~/.config/compo/init.sh.
     \\XDG_CONFIG_HOME overrides ~/.config. --no-init disables startup scripts.
     \\Scripts run under /bin/sh with COMPO_BIN and COMPO_SOCKET, outside any pane.
-    \\Ctrl-] Enter: new shell    Ctrl-] Tab: focus next window    Ctrl-] q: quit
+    \\{s} Enter: new shell    {s} Tab: focus next window    {s} q: quit
     \\Alt-drag: move/dock        Ctrl-Alt-drag: free move         Border drag: resize
-    \\Ctrl-] r: reload startup script (replaces all windows)
-    \\Ctrl-] [: scrollback      Ctrl-] c: select mode           Ctrl-] y: copy
+    \\{s} r: reload startup script (replaces all windows)
+    \\{s} [: scrollback      {s} c: select mode           {s} y: copy
     \\
     \\Run compo ctl --help for per-window commands and placement options.
     \\COMPO_SOCKET selects the control socket for ctl and is inherited by children.
@@ -116,12 +125,20 @@ pub fn main(init: std.process.Init) !void {
     }
     var init_path: ?[:0]const u8 = null;
     var no_init = false;
+    var show_help = false;
+    var prefix_name: ?[]const u8 = if (std.c.getenv("COMPO_PREFIX")) |value| std.mem.span(value) else null;
     var arg_index: usize = 1;
     while (arg_index < args.len) : (arg_index += 1) {
         const arg = args[arg_index];
         if (std.mem.eql(u8, arg, "--help") or std.mem.eql(u8, arg, "-h")) {
-            if (host.display(usage) != 0) return error.DisplayWriteFailed;
-            return;
+            show_help = true;
+        } else if (std.mem.eql(u8, arg, "--prefix")) {
+            arg_index += 1;
+            if (arg_index == args.len) return error.MissingPrefix;
+            prefix_name = args[arg_index];
+        } else if (std.mem.eql(u8, arg, "--no-title")) {
+            title_animation.phase = .hidden;
+            title_enabled = false;
         } else if (std.mem.eql(u8, arg, "--init")) {
             if (init_path != null or no_init) return error.ConflictingStartupOptions;
             arg_index += 1;
@@ -131,6 +148,17 @@ pub fn main(init: std.process.Init) !void {
             if (init_path != null) return error.ConflictingStartupOptions;
             no_init = true;
         } else return error.UnknownCommand;
+    }
+    if (prefix_name) |name| decoder.prefix_key = input.Prefix.parse(name) catch {
+        std.debug.print("compo: invalid prefix '{s}'; use Ctrl-a through Ctrl-z or Ctrl-@, Ctrl-\\, Ctrl-], Ctrl-^, Ctrl-_ (Escape is reserved).\n", .{name});
+        std.process.exit(1);
+    };
+    if (show_help) {
+        const label = decoder.prefix_key.label();
+        var buffer: [4096]u8 = undefined;
+        const text = try std.mem.print(&buffer, usage, .{ label, label, label, label, label, label, label });
+        if (host.display(text) != 0) return error.DisplayWriteFailed;
+        return;
     }
     host.startup_script = try @import("startup.zig").findScript(init.arena.allocator(), init_path, no_init);
     if (host.startup_script != null) {
@@ -293,6 +321,32 @@ fn newShell() !void {
     try applyLayout();
 }
 fn event(_: *anyopaque, value: input.Event) !void {
+    if (title_paste) {
+        if (value == .bytes and std.mem.eql(u8, value.bytes, "\x1b[201~")) title_paste = false;
+        return;
+    }
+    if (title_mouse_release and value == .mouse) {
+        if (value.mouse.release) title_mouse_release = false;
+        return;
+    }
+    if (title_animation.active()) {
+        switch (value) {
+            .focus => {},
+            .mouse => |mouse| {
+                if (!mouse.release and mouse.button & 96 == 0 and mouse.button & 3 != 3) {
+                    title_mouse_release = true;
+                    title_animation.dismiss(host.milliseconds());
+                }
+            },
+            .bytes => |bytes| {
+                title_paste = std.mem.eql(u8, bytes, "\x1b[200~");
+                title_animation.dismiss(host.milliseconds());
+            },
+            .quit => host.quit(),
+            else => title_animation.dismiss(host.milliseconds()),
+        }
+        return;
+    }
     switch (value) {
         .new_shell => try newShell(),
         .scrollback => if (focused()) |slot| {
@@ -695,7 +749,8 @@ fn draw() !void {
             s.terminal.modes.set(.synchronized_output, false);
             slot.sync_until = null;
         }
-        slot.renderer.tint = if (preview) |rect| .{ .bounds = rect } else null;
+        slot.renderer.occlusion = if (title_animation.active()) title.bounds(scene.root) else null;
+        slot.renderer.tint = if (title_animation.active()) .{ .bounds = scene.root, .color = .{ .r = 18, .g = 20, .b = 23 }, .alpha = 110 } else if (preview) |rect| .{ .bounds = rect } else null;
         const frame = try slot.renderer.draw(allocator, &render_scene, slot.id, s);
         try display(frame);
         slot.drawn_revision = s.revision;
@@ -712,13 +767,7 @@ fn draw() !void {
                 try decoration.drawNotice(&output.writer, &render_scene, slot.id, label);
             }
         };
-        if (!hasShells()) {
-            const label = "compo";
-            const hint = "Ctrl-] Enter: shell   Ctrl-] q: quit";
-            if (scene.root.w >= hint.len and scene.root.h >= 4) {
-                try output.writer.print("\x1b[{d};{d}H\x1b[36mcompo\x1b[0m\x1b[{d};{d}H{s}", .{ @divTrunc(scene.root.h, 2), @divTrunc(scene.root.w - @as(i32, label.len), 2) + 1, @divTrunc(scene.root.h, 2) + 2, @divTrunc(scene.root.w - @as(i32, hint.len), 2) + 1, hint });
-            }
-        }
+
         if (startup_notice) |notice| {
             var buf: [96]u8 = undefined;
             const label = try std.mem.print(&buf, "[ {s} ]", .{notice.text});
@@ -730,6 +779,13 @@ fn draw() !void {
         }
         try display(output.written());
     }
+    if (title_animation.active() and (borders_dirty or layout_dirty or drawn_scene != scene.revision)) {
+        if (border_output == null) border_output = .init(allocator);
+        const output = &border_output.?;
+        output.clearRetainingCapacity();
+        try title.draw(&output.writer, scene.root, title_frame);
+        try display(output.written());
+    }
     // Capture clicks and drags even when the focused shell has not requested mouse input.
     // Paste markers are always requested so compositor shortcuts never interpret pasted data.
     if (!modes_initialized) {
@@ -737,7 +793,7 @@ fn draw() !void {
         modes_initialized = true;
     }
     var visible_cursor = false;
-    if (focused()) |slot| {
+    if (!title_animation.active()) if (focused()) |slot| {
         const application_keys = slot.surface.?.terminal.modes.get(.cursor_keys);
         if (cursor_keys != application_keys) {
             try display(if (application_keys) "\x1b[?1h" else "\x1b[?1l");
@@ -763,7 +819,7 @@ fn draw() !void {
                 try display(try std.mem.print(&buf, "\x1b[{d};{d}H", .{ y + 1, x + 1 }));
             }
         };
-    }
+    };
     if (cursor_visible != visible_cursor) {
         try display(if (visible_cursor) "\x1b[?25h" else "\x1b[?25l");
         cursor_visible = visible_cursor;
@@ -1141,6 +1197,14 @@ pub fn startupNotice(text: []const u8) void {
     borders_dirty = true;
     control_dirty = true;
 }
+pub fn replayTitle() void {
+    if (!title_enabled) return;
+    title_animation = .{};
+    title_frame = .{ .alpha = 0, .scatter = 1 };
+    title_mouse_release = false;
+    title_paste = false;
+    layout_dirty = true;
+}
 pub fn closeAllWindows() void {
     paste_target = null;
     selection_drag = null;
@@ -1152,6 +1216,18 @@ pub fn closeAllWindows() void {
     layout_dirty = true;
 }
 pub fn compositor_tick(now: u64) bool {
+    var title_changed = false;
+    const was_active = title_animation.active();
+    if (was_active) {
+        const next = title_animation.frame(now);
+        title_changed = !std.meta.eql(next, title_frame);
+        title_frame = next;
+        if (title_changed) borders_dirty = true;
+        if (!title_animation.active()) {
+            layout_dirty = true;
+            title_changed = true;
+        }
+    }
     var notice_expired = false;
     if (startup_notice) |notice| if (now >= notice.until) {
         startup_notice = null;
@@ -1176,5 +1252,5 @@ pub fn compositor_tick(now: u64) bool {
         }
     };
     if (expired) borders_dirty = true;
-    return expired or sync_expired or notice_expired;
+    return expired or sync_expired or notice_expired or title_changed;
 }
