@@ -1,6 +1,10 @@
 [tools]
 zig = "0.17.0"
 
+[tasks.bootstrap]
+description = "Populate Zig local packages from the pinned libghostty-vt archive"
+run = "zig fetch --save=ghostty_vt vendor/libghostty-vt-source.tar.gz"
+
 [tasks.test]
 run = "zig build test"
 

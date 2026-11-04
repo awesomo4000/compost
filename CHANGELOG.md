@@ -2,6 +2,8 @@
 
 ## 11/04/2026
 
+- Validate native x86-64 Linux builds and the complete host/tmux test suite. Add a fresh-checkout dependency bootstrap task and Linux instructions; correct the docking-preview test to include the emitted ANSI reset.
+
 - Forward plain-text child clipboard writes to the outer terminal so tmux mouse copies reach the system clipboard, including over SSH. Keep clipboard reads blocked, enforce the 1 MiB write limit, and show copy notices.
 
 ## 10/30/2026

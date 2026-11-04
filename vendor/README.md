@@ -8,6 +8,19 @@ a local archive dependency with a Zig package hash. The geometry core remains
 independent of it. PNG decoding reuses the archive's existing Wuffs module through
 its pinned build module imports, so this integration needs checking on updates.
 
+On a fresh checkout, populate Zig 0.17's local package directory before building:
+
+```sh
+mise trust
+mise run bootstrap
+mise exec -- zig build -Doptimize=fast
+```
+
+`zig fetch` without `--save` only fills the global cache; `--save=ghostty_vt`
+also fills `zig-pkg/`. The pinned manifest is unchanged when the archive matches.
+Without this step, the relative archive URL can fail with `InvalidFormat` or a
+hash mismatch on a machine without the existing local package directory.
+
 Metadata and checksum are recorded in [libghostty-vt.json](libghostty-vt.json).
 The checked release is `1.3.2-main+f54340a`, commit
 `f54340ad77814fe319d136e5e915d6a48de8dd23`. The 4,241,877-byte asset was updated

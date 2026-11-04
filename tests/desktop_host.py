@@ -29,7 +29,7 @@ with tempfile.TemporaryDirectory(prefix='tmuxpp-desktop-', dir='/tmp') as direct
         # First dock occupies the left half. Preview is emitted before release.
         host.data.clear()
         send(b'\x1b[<8;20;8M\x1b[<40;1;12M')
-        host.until(lambda: b'\x1b[48;2;20;28;33m' in host.data)
+        host.until(lambda: b'\x1b[0;48;2;20;28;33m' in host.data)
         host.until(lambda: b'SHELL01' in host.text())
         send(b'\x1b[<8;1;12m')
         host.until(lambda: b'[38, 22]' in sizes())
