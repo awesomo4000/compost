@@ -1,5 +1,9 @@
 # Changelog
 
+## 11/04/2026
+
+- Forward plain-text child clipboard writes to the outer terminal so tmux mouse copies reach the system clipboard, including over SSH. Keep clipboard reads blocked, enforce the 1 MiB write limit, and show copy notices.
+
 ## 10/30/2026
 
 - Add top-right help on prefix / or ?, stable numbered focus on 1–9/0, and toggled border number/name labels on prefix n. Share input and help bindings; expose automatic or requested window numbers through the control API and CLI.

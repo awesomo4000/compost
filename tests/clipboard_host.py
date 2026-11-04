@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Clipboard writes are user initiated; tests capture OSC 52 in a disposable PTY."""
+"""Clipboard writes pass through; reads remain blocked; tests capture OSC 52 in a disposable PTY."""
 import base64
 import os
 from pathlib import Path
@@ -14,8 +14,10 @@ import os, sys, tty
 from pathlib import Path
 tty.setraw(0)
 path = Path(sys.argv[1])
-# Neither a write nor a read request from an application should escape.
-os.write(1, b'\x1b]52;c;dW53YW50ZWQ=\x1b\\\x1b]52;c;?\x1b\\')
+# Child writes pass through, but clipboard queries must not escape.
+os.write(1, b'\x1b]52;c;Y2hpbGQt')
+os.write(1, b'Y29weQ==\x1b\\\x1b]52;c;?\x1b\\')
+os.write(1, b'\x1b]52;c;not!base64\x07')
 os.write(1, 'alpha世界 e\u0301\r\nsecond\x1b[3;1HREADY'.encode())
 while True:
  data = os.read(0, 4096)
@@ -35,7 +37,8 @@ with tempfile.TemporaryDirectory(prefix='compo-clipboard-', dir='/tmp') as direc
     def select(): os.write(host.master, b'\x1b[<0;2;2M\x1b[<32;6;2M\x1b[<0;6;2m')
     try:
         host.until(lambda: b'READY' in host.text())
-        assert b'\x1b]52' not in host.data
+        assert copies() == [b'child-copy']
+        assert b';?' not in host.data
         assert not log.exists()
         host.data.clear()
         # A focus click, even with a same-cell motion report, is not a selection.
@@ -77,4 +80,4 @@ with tempfile.TemporaryDirectory(prefix='compo-clipboard-', dir='/tmp') as direc
         host.finish(0)
     finally:
         host.close()
-print('Clipboard: pane-local selection, explicit OSC 52 copy, app isolation, and bracketed paste passed.')
+print('Clipboard: pane-local selection, child writes, blocked queries, explicit copy, and bracketed paste passed.')

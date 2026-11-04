@@ -22,6 +22,7 @@ pub const Size = struct {
 pub const Sink = struct {
     context: *anyopaque,
     write: *const fn (*anyopaque, []const u8) anyerror!void,
+    clipboard: ?*const fn (*anyopaque, u8, []const u8) anyerror!void = null,
     /// Reports borrow parser memory and must be consumed or copied synchronously.
     status: ?*const fn (*anyopaque, vt.osc.Command.ProgramStatus.Report) void = null,
 };
@@ -69,6 +70,7 @@ pub const Surface = struct {
         var handler = vt.TerminalStream.Handler.init(&self.terminal);
         handler.effects = .readonly;
         handler.effects.write_pty = writeReply;
+        if (sink.clipboard != null) handler.effects.clipboard_write = writeClipboard;
         handler.effects.size = reportSize;
         handler.effects.device_attributes = deviceAttributes;
         if (sink.status != null) handler.effects.program_status = reportStatus;
@@ -162,6 +164,47 @@ pub const Surface = struct {
             self.output_error = err;
         };
     }
+    fn writeClipboard(handler: *vt.TerminalStream.Handler, request: vt.clipboard.Write) void {
+        const self = owner(handler);
+        const callback = self.sink.clipboard orelse {
+            request.reply(.unsupported);
+            return;
+        };
+        const destination: u8 = switch (request.location) {
+            .standard => 'c',
+            .selection => 's',
+            .primary => 'p',
+            else => {
+                request.reply(.unsupported);
+                return;
+            },
+        };
+        var data: []const u8 = "";
+        if (request.contents.len > 0) {
+            var found = false;
+            for (request.contents) |content| if (vt.clipboard.isTextMime(content.mime)) {
+                data = content.data;
+                found = true;
+                break;
+            };
+            if (!found) {
+                request.reply(.unsupported);
+                return;
+            }
+        }
+        if (data.len > 1024 * 1024) {
+            request.reply(.denied);
+            return;
+        }
+        callback(self.sink.context, destination, data) catch |err| {
+            self.output_error = err;
+            request.reply(.io_error);
+            return;
+        };
+        // Success means forwarded; OSC 52 cannot acknowledge the outer clipboard.
+        request.reply(.{ .success = .{} });
+    }
+
     fn reportSize(handler: *vt.TerminalStream.Handler) ?vt.size_report.Size {
         const size = owner(handler).size;
         if (size.cell_width == 0) return null;
@@ -302,4 +345,35 @@ test "resize sends negotiated in-band size reports and preserves valid state on 
     try std.testing.expectEqualStrings("\x1b[48;10;30;160;240t", output.bytes.items);
     try std.testing.expectError(error.InvalidSize, surface.resize(.{ .columns = 0, .rows = 1 }));
     try std.testing.expectEqual(@as(u16, 30), surface.size.columns);
+}
+
+test "clipboard writes preserve target and text while queries remain blocked" {
+    const Observer = struct {
+        calls: usize = 0,
+        target: u8 = 0,
+        len: usize = 0,
+        fn write(_: *anyopaque, _: []const u8) !void {
+            return error.UnexpectedClipboardReadReply;
+        }
+        fn clipboard(ctx: *anyopaque, target: u8, text: []const u8) !void {
+            const self: *@This() = @ptrCast(@alignCast(ctx));
+            self.calls += 1;
+            self.target = target;
+            self.len = text.len;
+            if (text.len > 0) try std.testing.expectEqualStrings("hello", text);
+        }
+    };
+    var observer: Observer = .{};
+    const surface = try Surface.create(std.testing.io, std.testing.allocator, .{ .columns = 20, .rows = 5 }, .{ .context = &observer, .write = Observer.write, .clipboard = Observer.clipboard });
+    defer surface.destroy();
+    try surface.feed("\x1b]52;p;aGV");
+    try surface.feed("sbG8=\x07");
+    try std.testing.expectEqual(@as(usize, 1), observer.calls);
+    try std.testing.expectEqual(@as(u8, 'p'), observer.target);
+    try surface.feed("\x1b]52;c;?\x1b\\\x1b]52;p;?\x07");
+    try std.testing.expectEqual(@as(usize, 1), observer.calls);
+    try surface.feed("\x1b]52;c;\x1b\\");
+    try std.testing.expectEqual(@as(usize, 2), observer.calls);
+    try std.testing.expectEqual(@as(u8, 'c'), observer.target);
+    try std.testing.expectEqual(@as(usize, 0), observer.len);
 }

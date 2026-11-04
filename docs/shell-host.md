@@ -111,8 +111,12 @@ that child requests them. It never reads the system clipboard itself. Copy works
 over SSH when the outer terminal supports and permits OSC 52 writes; terminal
 settings or intermediate multiplexers can block it. Compo cannot confirm that the
 terminal accepted the write. Copies larger than 1 MiB ring the bell and are not
-sent. No clipboard polling, query requests, or automatic child OSC 52 forwarding
-is enabled. Clipboard writes happen only on the explicit copy shortcut.
+sent. Plain-text child clipboard writes, including tmux OSC 52 copies, are
+forwarded to the outer terminal with the same 1 MiB limit and copy notice.
+This lets tmux mouse selection respect its own pane boundaries, including over
+SSH. Clipboard reads and query forwarding remain disabled. Programs running
+directly in compo can write the clipboard just as they can in a terminal that
+permits OSC 52. The outer terminal controls whether it accepts the write.
 
 Selection also works on the visible scrollback viewport. Selection autoscroll,
 word/line gestures, rectangular selections, and clipboard readback are not included.

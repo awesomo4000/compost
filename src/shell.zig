@@ -194,6 +194,19 @@ fn write(ctx: *anyopaque, bytes: []const u8) !void {
     const slot: *Slot = @ptrCast(@alignCast(ctx));
     if (host.write(slot.index, bytes) != 0) return error.ChildWriteFailed;
 }
+fn clipboardWrite(clipboard_target: u8, text: []const u8) !void {
+    const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(text.len));
+    defer allocator.free(encoded);
+    _ = std.base64.standard.Encoder.encode(encoded, text);
+    try display(&.{ 0x1b, ']', '5', '2', ';', clipboard_target, ';' });
+    try display(encoded);
+    try display("\x1b\\");
+}
+fn childClipboard(ctx: *anyopaque, clipboard_target: u8, text: []const u8) !void {
+    const slot: *Slot = @ptrCast(@alignCast(ctx));
+    try clipboardWrite(clipboard_target, text);
+    showNotice(slot, .copied, characterCount(text));
+}
 fn focused() ?*Slot {
     for (&slots) |*slot| if (slot.surface != null and scene.focus == slot.id) return slot;
     return null;
@@ -248,7 +261,7 @@ fn resize(cols: u16, rows: u16, cw: u16, ch: u16, requested_count: c_int) !void 
                 .rows = @intCast(@max(1, bounds.h)),
                 .cell_width = pixel_width,
                 .cell_height = pixel_height,
-            }, .{ .context = slot, .write = write }, 8 * 1024 * 1024);
+            }, .{ .context = slot, .write = write, .clipboard = childClipboard }, 8 * 1024 * 1024);
             if (host.setSize(slot.index, slot.surface.?.size.columns, slot.surface.?.size.rows, pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
         }
         if (count != 0) try scene.setFocus(slots[if (count == 1) 0 else 1].id);
@@ -331,7 +344,7 @@ fn newShell() !void {
     slot.renderer.invalidate(allocator);
     slot.floating_bounds = null;
     slot.drawn_revision = null;
-    slot.surface = try terminal.Surface.createWithHistory(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write }, 8 * 1024 * 1024);
+    slot.surface = try terminal.Surface.createWithHistory(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write, .clipboard = childClipboard }, 8 * 1024 * 1024);
     errdefer {
         slot.surface.?.destroy();
         slot.surface = null;
@@ -434,18 +447,11 @@ fn event(_: *anyopaque, value: input.Event) !void {
         .copy_selection => if (focused()) |slot| {
             if (try slot.surface.?.selectionText(allocator)) |text| {
                 defer allocator.free(text);
-                // Only this explicit user command may write the outer clipboard.
-                // Child OSC 52 effects remain disabled in the VT handler.
                 if (text.len > 1024 * 1024) {
                     try display("\x07");
                     return;
                 }
-                const encoded = try allocator.alloc(u8, std.base64.standard.Encoder.calcSize(text.len));
-                defer allocator.free(encoded);
-                _ = std.base64.standard.Encoder.encode(encoded, text);
-                try display("\x1b]52;c;");
-                try display(encoded);
-                try display("\x1b\\");
+                try clipboardWrite('c', text);
                 showNotice(slot, .copied, characterCount(text));
                 slot.surface.?.clearSelection();
                 slot.selecting = false;
@@ -1228,7 +1234,7 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         const command = try allocator.dupe(u8, argv[0]);
         errdefer allocator.free(command);
         const bounds = decoration.contentFor(&candidate, id);
-        const s = try terminal.Surface.createWithHistory(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write }, 8 * 1024 * 1024);
+        const s = try terminal.Surface.createWithHistory(io, allocator, .{ .columns = @intCast(bounds.w), .rows = @intCast(bounds.h), .cell_width = pixel_width, .cell_height = pixel_height }, .{ .context = slot, .write = write, .clipboard = childClipboard }, 8 * 1024 * 1024);
         errdefer s.destroy();
         if (host.setSize(slot.index, @intCast(bounds.w), @intCast(bounds.h), pixel_width, pixel_height) != 0) return error.ChildResizeFailed;
         try host.spawnCommand(@intCast(slot.index), argv, req.cwd, req.env);
