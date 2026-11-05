@@ -77,6 +77,12 @@ pub fn build(b: *std.Build) void {
         }),
     });
     if (target.result.os.tag == .linux) shell.root_module.linkSystemLibrary("util", .{});
+    if (target.result.os.tag == .windows) {
+        const translated = @import("translate_c").Translator.init(b.dependency("translate_c", .{}), .{ .c_source_file = b.path("src/win.h"), .target = target, .optimize = optimize });
+        shell.root_module.addImport("winapi", translated.mod);
+        shell.root_module.linkSystemLibrary("ws2_32", .{});
+        shell.root_module.linkSystemLibrary("bcrypt", .{});
+    }
     b.installArtifact(shell);
     b.installArtifact(terminal_demo);
     b.step("shell", "Run the interactive compositor desktop").dependOn(&b.addRunArtifact(shell).step);

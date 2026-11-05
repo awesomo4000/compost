@@ -42,6 +42,14 @@ with tempfile.TemporaryDirectory(prefix="compo-ctl-", dir="/tmp") as directory:
             return json.loads(result.stdout) if result.stdout else None
 
         assert cli("list")["result"]["windows"] == []
+        assert cli("default-shell", "/bin/sh")["result"]["shell"] == "/bin/sh"
+        cli("default-shell", "relative-shell", ok=False)
+        assert cli("default-shell")["result"]["shell"] == "/bin/sh"
+        default = cli("create", "--float", "1,1,20,10", "--name", "default-shell-test")
+        assert default["result"]["window"]["command"] == "/bin/sh"
+        cli("close", "default-shell-test")
+        cli("default-shell", "/bin/bash")
+
         report = Path(directory, "size.json")
         fixture = """import os, signal, json, sys
 from pathlib import Path

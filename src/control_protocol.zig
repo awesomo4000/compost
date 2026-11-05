@@ -3,7 +3,7 @@ const std = @import("std");
 pub const max_frame = 64 * 1024;
 pub const max_queue = 1024 * 1024;
 pub const max_pending = 64;
-pub const operations = [_][]const u8{ "startup.get", "startup.reload", "window.list", "window.get", "window.create", "window.place", "window.focus", "window.raise", "window.lower", "window.close" };
+pub const operations = [_][]const u8{ "config.shell", "startup.get", "startup.reload", "window.list", "window.get", "window.create", "window.place", "window.focus", "window.raise", "window.lower", "window.close" };
 pub const Info = struct {
     instance: []const u8,
     columns: u16,

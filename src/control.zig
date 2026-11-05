@@ -1,6 +1,7 @@
 //! Nonblocking local control transport. Called only by the host event loop.
 const std = @import("std");
-const c = std.c;
+const is_windows = @import("builtin").os.tag == .windows;
+const c = if (is_windows) @import("win_socket.zig") else std.c;
 const app = @import("root");
 const protocol = @import("control_protocol.zig");
 extern "c" fn mkdtemp([*:0]u8) ?[*:0]u8;
@@ -89,6 +90,7 @@ const Client = struct {
     }
 };
 fn prepare(fd: c.fd_t) !void {
+    if (is_windows) return c.nonblock(fd);
     const flags = c.fcntl(fd, c.F.GETFL);
     const nonblock: c_int = @bitCast(@as(c.O, .{ .NONBLOCK = true }));
     if (flags < 0 or c.fcntl(fd, c.F.SETFL, flags | nonblock) < 0 or c.fcntl(fd, c.F.SETFD, @as(c_int, 1)) < 0) return error.SocketFlags;
@@ -98,20 +100,24 @@ fn prepare(fd: c.fd_t) !void {
 }
 pub const Server = struct {
     listener: c.fd_t = -1,
-    directory: [32:0]u8 = @splat(0),
+    directory: [104:0]u8 = @splat(0),
     path: [104:0]u8 = @splat(0),
     instance: [32]u8 = undefined,
     clients: [max_clients]?*Client = @splat(null),
     pub fn init() !Server {
         var self: Server = .{};
-        const template = "/tmp/compo-XXXXXX";
-        @memcpy(self.directory[0..template.len], template);
-        if (mkdtemp(&self.directory) == null) return error.SocketDirectory;
+        var random: [16]u8 = undefined;
+        if (is_windows) try c.random(&random) else arc4random_buf(&random, random.len);
+        self.instance = std.fmt.bytesToHex(random, .lower);
+        if (is_windows) {
+            try c.directory(&self.directory, &self.instance);
+        } else {
+            const template = "/tmp/compo-XXXXXX";
+            @memcpy(self.directory[0..template.len], template);
+            if (mkdtemp(&self.directory) == null) return error.SocketDirectory;
+        }
         errdefer _ = c.rmdir(&self.directory);
         _ = try std.mem.print(&self.path, "{s}/control.sock", .{std.mem.sliceTo(&self.directory, 0)});
-        var random: [16]u8 = undefined;
-        arc4random_buf(&random, random.len);
-        self.instance = std.fmt.bytesToHex(random, .lower);
         self.listener = c.socket(c.AF.UNIX, c.SOCK.STREAM, 0);
         if (self.listener < 0) return error.SocketCreate;
         errdefer _ = c.close(self.listener);

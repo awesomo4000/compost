@@ -1,4 +1,5 @@
 //! POSIX PTY and tty adapter. Layout and terminal emulation live in shell.zig.
+pub var default_shell: ?[:0]const u8 = null;
 const std = @import("std");
 const c = std.c;
 const app = @import("root");
@@ -126,8 +127,8 @@ fn anyAlive() bool {
 }
 pub fn spawn(slot: usize, initial: bool) bool {
     if (children[slot] >= 0) return false;
-    const env_shell = c.getenv("SHELL");
-    const shell: [*:0]const u8 = if (env_shell != null and env_shell.?[0] == '/') env_shell.? else "/bin/sh";
+    const env_shell = c.getenv("COMPO_SHELL") orelse c.getenv("SHELL");
+    const shell: [*:0]const u8 = if (default_shell) |value| value.ptr else if (env_shell != null and env_shell.?[0] == '/') env_shell.? else "/bin/sh";
     const command = c.getenv(if (initial and slot == 0 and count >= 2) "COMPO_SIDEBAR_COMMAND" else if (initial and slot == 2) "COMPO_FLOAT_COMMAND" else "COMPO_COMMAND");
     const child = forkpty(&masters[slot], null, if (headless) null else &original, &sizes[slot]);
     if (child < 0) {

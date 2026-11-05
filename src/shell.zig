@@ -23,7 +23,7 @@ var diagnostic_len: usize = 0;
 var diagnostic_overflow = false;
 var defer_diagnostics = true;
 fn logDiagnostic(comptime level: std.log.Level, comptime scope: @EnumLiteral(), comptime format: []const u8, args: anytype) void {
-    if (!defer_diagnostics or std.c.isatty(2) == 0) {
+    if (!defer_diagnostics or (if (is_windows) !@import("win.zig").stderrIsTerminal() else std.c.isatty(2) == 0)) {
         std.log.defaultLog(level, scope, format, args);
         return;
     }
@@ -37,13 +37,15 @@ fn flushDiagnostics() void {
     defer_diagnostics = false;
     var remaining = diagnostic_bytes[0..diagnostic_len];
     while (remaining.len != 0) {
-        const n = std.c.write(2, remaining.ptr, remaining.len);
+        const n = if (is_windows) @import("win.zig").stderrWrite(remaining) else std.c.write(2, remaining.ptr, remaining.len);
         if (n <= 0) break;
         remaining = remaining[@intCast(n)..];
     }
     if (diagnostic_overflow) std.log.warn("additional terminal diagnostics omitted", .{});
 }
-const host = @import("host.zig");
+const is_windows = @import("builtin").os.tag == .windows;
+const host = if (is_windows) @import("host_windows.zig") else @import("host.zig");
+const startup = if (is_windows) @import("startup_windows.zig") else @import("startup.zig");
 const Notice = struct { count: usize, action: enum { copied, pasted }, until: u64 };
 var paste_target: ?struct { id: ?core.Id, count: usize = 0, bracketed: bool = false } = null;
 const Slot = struct { number: ?u8 = null, sync_until: ?u64 = null, notice: ?Notice = null, browsing: bool = false, selecting: bool = false, name: ?[]u8 = null, command: ?[]u8 = null, index: c_int, id: core.Id = 0, surface: ?*terminal.Surface = null, renderer: Renderer, drawn_revision: ?u64 = null, floating_bounds: ?core.Rect = null };
@@ -91,9 +93,16 @@ const usage =
     \\--prefix KEY overrides COMPO_PREFIX (default Ctrl-]); e.g. ctrl-] or C-].
     \\Use Ctrl-a through Ctrl-z, Ctrl-@, Ctrl-\, Ctrl-], Ctrl-^, or Ctrl-_.
     \\--no-title skips the startup modal. Any key or click dismisses it otherwise.
+++ (if (is_windows)
+    "Startup: --init FILE, otherwise COMPO_INIT or ~/.config/compo/init.ps1.\n" ++
+        "Scripts use PowerShell (.ps1) or Git Bash (.sh), with COMPO_BIN and COMPO_SOCKET.\n" ++
+        "COMPO_SHELL selects the shell executable; PowerShell is the default.\n" ++
+        "COMPO_BASH selects Git Bash for .sh startup scripts. --no-init disables scripts.\n"
+else
     \\Startup: --init FILE, otherwise COMPO_INIT or ~/.config/compo/init.sh.
     \\XDG_CONFIG_HOME overrides ~/.config. --no-init disables startup scripts.
     \\Scripts run under /bin/sh with COMPO_BIN and COMPO_SOCKET, outside any pane.
+) ++
     \\
     \\Run compo ctl --help for per-window commands and placement options.
     \\COMPO_SOCKET selects the control socket for ctl and is inherited by children.
@@ -163,13 +172,15 @@ pub fn main(init: std.process.Init) !void {
         try display("Alt-drag: move/dock; Ctrl-Alt-drag: free move; border drag: resize\n");
         return;
     }
-    host.startup_script = try @import("startup.zig").findScript(init.arena.allocator(), init_path, no_init);
+    host.startup_script = try startup.findScript(init.arena.allocator(), init_path, no_init);
+    if (is_windows) host.startup_binary = try std.process.executablePathAlloc(init.io, init.arena.allocator());
     if (host.startup_script != null) {
         host.startup_binary = try std.process.executablePathAlloc(init.io, init.arena.allocator());
         var cwd: [4096]u8 = undefined;
-        const path = std.c.getcwd(&cwd, cwd.len) orelse return error.StartupDirectoryUnavailable;
+        const path = (if (is_windows) @import("win.zig").cwd(&cwd) else std.c.getcwd(&cwd, cwd.len)) orelse return error.StartupDirectoryUnavailable;
         host.startup_directory = try init.arena.allocator().dupeSentinel(u8, std.mem.span(@as([*:0]const u8, @ptrCast(path))), 0);
     }
+    defer if (host.default_shell) |shell| allocator.free(shell);
     io = init.io;
     trace_mouse = if (std.c.getenv("COMPO_TRACE_MOUSE")) |v| std.mem.eql(u8, std.mem.span(v), "1") else false;
     if (std.c.getenv("COMPO_BORDER_STYLE")) |value| {
@@ -1136,7 +1147,8 @@ fn controlArgv(a: std.mem.Allocator, req: ControlRequest) ![]const []const u8 {
         if (req.command != null or req.shell != null) return error.InvalidArgv;
         return argv;
     }
-    const shell = req.shell orelse if (std.c.getenv("SHELL")) |v| std.mem.span(v) else "/bin/sh";
+    if (is_windows) return host.shellArgv(a, req.shell, req.command);
+    const shell = req.shell orelse host.default_shell orelse if (std.c.getenv("COMPO_SHELL") orelse std.c.getenv("SHELL")) |v| std.mem.span(v) else "/bin/sh";
     if (shell.len == 0 or shell[0] != '/' or !validString(shell)) return error.InvalidShell;
     if (req.command) |command| {
         if (!validString(command)) return error.InvalidArgv;
@@ -1168,6 +1180,17 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
         for (value.object.keys()) |key| if (!std.mem.eql(u8, key, "id") and !std.mem.eql(u8, key, "op")) return error.InvalidRequest;
         if (std.mem.eql(u8, req.op, "startup.reload")) try host.requestReload();
         return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .script = host.startup_script, .cwd = host.startup_directory, .phase = @tagName(host.startup_phase) } }, .{});
+    }
+    if (std.mem.eql(u8, req.op, "config.shell")) {
+        for (value.object.keys()) |key| if (!std.mem.eql(u8, key, "id") and !std.mem.eql(u8, key, "op") and !std.mem.eql(u8, key, "shell")) return error.InvalidRequest;
+        if (req.shell) |shell| {
+            if (shell.len == 0 or !validString(shell) or !std.fs.path.isAbsolute(shell)) return error.InvalidShell;
+            const copy = try allocator.dupeSentinel(u8, shell, 0);
+            if (host.default_shell) |old| allocator.free(old);
+            host.default_shell = copy;
+        }
+        const argv = try controlArgv(a, .{ .id = req.id, .op = req.op });
+        return std.json.Stringify.valueAlloc(a, .{ .id = req.id, .result = .{ .shell = argv[0] } }, .{});
     }
     const create = std.mem.eql(u8, req.op, "window.create");
     const list = std.mem.eql(u8, req.op, "window.list");
@@ -1204,14 +1227,14 @@ pub fn controlDispatch(a: std.mem.Allocator, value: std.json.Value, instance: []
     if (create) {
         const number = try availableNumber(req.number);
         const argv = try controlArgv(temp, req);
-        if (argv.len == 0 or argv.len > 128 or argv[0].len == 0 or argv[0].len > 512 or argv[0][0] != '/') return error.InvalidArgv;
+        if (argv.len == 0 or argv.len > 128 or argv[0].len == 0 or argv[0].len > 512 or !std.fs.path.isAbsolute(argv[0])) return error.InvalidArgv;
         var total: usize = 0;
         for (argv) |arg| {
             if (!validString(arg)) return error.InvalidArgv;
             total += arg.len;
         }
         if (total > 8192) return error.InvalidArgv;
-        if (req.cwd) |cwd| if (!validString(cwd) or cwd.len == 0 or cwd[0] != '/') return error.InvalidCwd;
+        if (req.cwd) |cwd| if (!validString(cwd) or cwd.len == 0 or !std.fs.path.isAbsolute(cwd)) return error.InvalidCwd;
         for (req.env.map.keys(), req.env.map.values()) |key, val| {
             if (key.len == 0 or !validString(key) or !validString(val) or std.mem.indexOfScalar(u8, key, '=') != null) return error.InvalidEnvironment;
         }

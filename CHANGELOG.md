@@ -1,6 +1,12 @@
 # Changelog
 
+## 11/05/2026
+
+- Add `compo ctl default-shell [PATH]` so startup scripts can select the shell for later control-created and prefix Enter windows. Explicit per-window shell choices still override the default.
+
 ## 11/04/2026
+
+- Add an experimental native Windows ConPTY host, console input adapter, local control sockets, and PowerShell/Git Bash startup scripts. Add native console integration tests and document the cross-build workflow and remaining Windows checks.
 
 - Validate native x86-64 Linux builds and the complete host/tmux test suite. Add a fresh-checkout dependency bootstrap task and Linux instructions; correct the docking-preview test to include the emitted ANSI reset.
 
